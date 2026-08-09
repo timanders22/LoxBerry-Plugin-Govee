@@ -1,0 +1,18 @@
+# Diese Pakete installiert LoxBerry mit "apt-get -y install" - und zwar als
+# root, waehrend der Plugin-Installation.
+#
+# WARUM DAS HIER STEHT UND NICHT IN postinstall.sh:
+# postinstall.sh laeuft als Benutzer loxberry. Ein "apt-get install" dort
+# scheitert mangels Rechten - immer, still, und mit einem Hinweistext, den man
+# leicht ueberliest. Diese Liste ist der vorgesehene Weg.
+#
+# php-curl wird ausschliesslich fuer den Cloud-Weg gebraucht (die offizielle
+# Govee-Entwicklerschnittstelle). Wer nur Geraete mit LAN Control betreibt -
+# also den Regelweg - braucht es nicht; deshalb bricht das Plugin ohne curl
+# auch nicht ab, sondern meldet es im Reiter Test.
+#
+# Bewusst NICHT eingetragen: php-sockets. Das Plugin kommt mit Datenstroemen
+# (stream_socket_*) aus, die Kernbestandteil von PHP sind. Eine Erweiterung,
+# die nicht garantiert geladen ist, haette den Loxone-Endpunkt mit
+# "undefined function" toeten koennen.
+php-curl

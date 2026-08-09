@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Icon: Smart LED Bulb (nach unten verschoben) -->
+    <g transform="translate(0, 30)">
+      <!-- Bulb Dome / Glass Body -->
+      <path d="M 216 145 C 200 115 220 75 256 75 C 292 75 312 115 296 145 C 286 165 280 175 280 195 L 232 195 C 232 175 226 165 216 145 Z" fill="#ffffff" />
+      <!-- Bulb Base Threads -->
+      <rect x="236" y="200" width="40" height="8" rx="3" fill="#ffffff" />
+      <rect x="238" y="212" width="36" height="8" rx="3" fill="#ffffff" />
+      <path d="M 242 224 C 242 228 270 228 270 224 L 266 220 L 246 220 Z" fill="#ffffff" />
+
+      <!-- Cutout inside Bulb (Filament / Smart Glow Icon) -->
+      <path d="M 244 140 C 244 125 268 125 268 140 C 268 152 256 160 256 170" fill="none" stroke="#6dac20" stroke-width="5" stroke-linecap="round" />
+      <circle cx="256" cy="180" r="3" fill="#6dac20" />
+
+      <!-- Light Rays Surrounding Bulb -->
+      <line x1="256" y1="48" x2="256" y2="62" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+      <line x1="195" y1="75" x2="206" y2="86" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+      <line x1="317" y1="75" x2="306" y2="86" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+      <line x1="170" y1="125" x2="185" y2="125" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+      <line x1="342" y1="125" x2="327" y2="125" stroke="#ffffff" stroke-width="6" stroke-linecap="round" />
+    </g>
+
+    <!-- Flanking Left Symbol: LED Light Strip / Spot Ribbon (Ursprüngliche Position) -->
+    <g transform="translate(108, 170)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -12 6 C -6 -12 6 12 12 -6" fill="none" stroke="#6dac20" stroke-width="4" stroke-linecap="round" />
+      <circle cx="-8" cy="1" r="2.5" fill="#6dac20" />
+      <circle cx="0" cy="0" r="2.5" fill="#6dac20" />
+      <circle cx="8" cy="-1" r="2.5" fill="#6dac20" />
+    </g>
+
+    <!-- Flanking Right Symbol: Smart Home / Loxone Miniserver Control (Ursprüngliche Position) -->
+    <g transform="translate(404, 170)">
+      <circle cx="0" cy="0" r="22" fill="#ffffff" />
+      <path d="M -9 2 L 0 -7 L 9 2 L 9 9 C 9 10.5 7.5 11 6 11 L -6 11 C -7.5 11 -9 10.5 -9 9 Z" fill="#6dac20" />
+      <rect x="-3" y="4" width="6" height="7" fill="#ffffff" />
+    </g>
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Govee</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
+</svg>

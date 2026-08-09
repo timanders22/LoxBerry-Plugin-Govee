@@ -1,0 +1,31 @@
+#!/bin/bash
+# Govee - Deinstallation
+#
+# Die Deinstallation von LoxBerry entfernt nur das VERZEICHNIS
+# config/plugins/<ordner>/. Eine Sicherungsdatei DANEBEN -
+# config/plugins/<ordner>.backup.json - bliebe liegen. Beim WifiScanner
+# enthielt so eine Datei die MAC-Adressen und Namen aller ueberwachten
+# Personen. Hier stehen zwar nur IP-Adressen und Geraetekennungen drin, aber
+# es gibt keinen Grund, sie liegen zu lassen.
+SELF=$(cd "$(dirname "$0")" && pwd)
+PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
+BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+
+DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
+[ -x "$DIENST" ] && "$DIENST" stop >/dev/null 2>&1
+
+PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
+if [ -f "$PID" ]; then
+    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    rm -f "$PID"
+fi
+
+# Die Sicherung neben dem Ordner - der Installer raeumt sie nicht weg.
+rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+# Die Datei mit dem Cloud-Schluessel liegt im Ordner und geht mit ihm; zur
+# Sicherheit trotzdem ausdruecklich loeschen, falls der Ordner stehen bleibt.
+rm -f "$BASE/config/plugins/$PFOLDER/geheim.json"
+rm -rf "$BASE/data/plugins/$PFOLDER"
+
+echo "<OK> Govee-Plugin entfernt, Sicherungsdatei und Cloud-Schluessel geloescht."
+exit 0
