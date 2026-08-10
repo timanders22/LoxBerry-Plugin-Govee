@@ -1,77 +1,33 @@
-<h2>Govee</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Bindet Govee-Leuchten an Loxone an &mdash; <b>ohne Cloud, ohne Konto und ohne
-Internet</b>, solange die Leuchte LAN Control beherrscht.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<h3>Voraussetzung: LAN Control</h3>
-<p>In der Govee-App je Leuchte: <i>Ger&auml;t &rarr; Einstellungen &rarr; LAN
-Control</i> einschalten. Ohne diesen Schalter antwortet die Leuchte im Heimnetz
-auf gar nichts &mdash; weder auf die Suche noch auf einen Befehl. Anschlie&szlig;end
-im Router eine feste IP-Adresse reservieren, sonst zeigt die Einstellung nach
-dem n&auml;chsten Neustart des Routers ins Leere.</p>
+<h3><TMPL_VAR HILFE.K03></h3>
+<p><TMPL_VAR HILFE.K04></p>
 
-<h3>Der Port 4002 &mdash; warum es einen Dienst gibt</h3>
-<p>Jede Govee-Leuchte schickt ihre Antwort an <b>UDP-Port 4002 des
-Anfragenden</b>. Diesen Port kann im ganzen Rechner nur ein einziges Programm
-halten. Deshalb fragt <b>nur der Abrufdienst</b> die Leuchten ab; Oberfl&auml;che und
-Miniserver reichen ihre W&uuml;nsche &uuml;ber eine Warteschlange an ihn weiter.
-L&auml;uft der Dienst nicht, kommen keine Zustandswerte an &mdash; das ist die mit
-Abstand h&auml;ufigste Ursache, wenn nichts passiert.</p>
+<h3><TMPL_VAR HILFE.K05></h3>
+<p><TMPL_VAR HILFE.K06></p>
 
-<h3>Drei Wege</h3>
-<p><b>LAN</b> &mdash; der Regelweg. UDP-Port 4003, Befehle: ein, aus, Helligkeit,
-Farbe, Farbtemperatur. Loxone kann diese Befehle sogar unmittelbar an die
-Leuchte schicken, ohne Umweg &uuml;ber den LoxBerry.</p>
-<p><b>ptReal</b> &mdash; derselbe Weg, aber mit den BLE-Befehlen, die die Govee-App
-sonst per Bluetooth schickt. Damit werden <b>Szenen</b>, der <b>Musikbetrieb</b>
-und die <b>Segment- und Pixelsteuerung</b> erreichbar, die die dokumentierte
-Schnittstelle nicht kennt. Das Plugin baut diese Befehle selbst, samt
-XOR-Pr&uuml;fsumme und Aufteilung auf mehrere Pakete.</p>
-<p><b>Zwei Segmentverfahren.</b> <i>Graffiti</i> spricht einzelne Pixel an und
-ist an der Stehlampe H6076 gemessen; <i>Bitmaske</i> spricht ganze Segmente an
-und ist die Form, die bei der Lichterkette H70C4 wirkt. Welches Verfahren Ihre
-Leuchte versteht, sagt nur der Versuch &mdash; im Reiter <i>Test</i> stehen
-beide zur Auswahl, und der Endpunkt nimmt
-<span class="sm-mono">&amp;verfahren=maske</span> entgegen.</p>
-<p><b>Cloud</b> &mdash; nur f&uuml;r Ger&auml;te ohne LAN Control. Braucht Internet, ein
-Govee-Konto und einen API-Schl&uuml;ssel und kann nur die Grundbefehle.</p>
+<h3><TMPL_VAR HILFE.K07></h3>
+<p><TMPL_VAR HILFE.K08></p>
+<p><TMPL_VAR HILFE.K09></p>
+<p><TMPL_VAR HILFE.K10></p>
+<p><TMPL_VAR HILFE.K11></p>
 
-<h3>So gehen Sie vor</h3>
+<h3><TMPL_VAR HILFE.K12></h3>
 <ol>
-<li><b>Test:</b> Knopf <i>Ger&auml;te im Netz suchen</i>. Es melden sich alle Leuchten
-mit eingeschaltetem LAN Control.</li>
-<li><b>Einstellungen:</b> <i>Gefundene Ger&auml;te &uuml;bernehmen</i>, dann Namen und
-<b>Pixelzahl</b> erg&auml;nzen und speichern. Ohne Pixelzahl sind Balken und
-Segmente gesperrt.</li>
-<li><b>Dienst starten.</b></li>
-<li><b>Test:</b> Die Selbstpr&uuml;fung sagt Zeile f&uuml;r Zeile, ob es tr&auml;gt. Jedes
-Kreuz nennt die Abhilfe mit.</li>
-<li><b>MQTT:</b> Das Abo im MQTT-Gateway eintragen. Ohne diesen Eintrag kommt am
-Miniserver nichts an.</li>
-<li><b>Einbindung in Loxone:</b> Schritt f&uuml;r Schritt, mit vollst&auml;ndiger
-Baustein-Liste und fertigen Importdateien f&uuml;r Loxone Config.</li>
+<li><TMPL_VAR HILFE.K13></li>
+<li><TMPL_VAR HILFE.K14></li>
+<li><TMPL_VAR HILFE.K15></li>
+<li><TMPL_VAR HILFE.K16></li>
+<li><TMPL_VAR HILFE.K17></li>
+<li><TMPL_VAR HILFE.K18></li>
 </ol>
 
-<h3>Was das Plugin nicht kann</h3>
-<p>Govee vergibt Szenenkennungen und die Form der Segmentbefehle <b>je
-Modellreihe</b>. Der mitgelieferte Szenenkatalog stammt von der Stehlampe
-H6076, der Lichterkette H70C4 und einem RGBIC-Streifen. Der Selbsttest
-beweist, dass dieses Plugin dieselben Bytes baut wie die Govee-App &mdash; er
-beweist <b>nicht</b>, dass Ihre Leuchte sie versteht. Was bei Ihrem Modell
-wirkt, sagt nur der Versuch.</p>
-<p>Bei manchen Leuchten (zum Beispiel der Lichterkette H7025) ist die
-BLE-Kommunikation verschl&uuml;sselt. Befehle lassen sich dort nicht mehr
-mitschneiden &mdash; &uuml;ber ptReal gesendet funktionieren sie trotzdem, man muss
-sie nur bei einer &auml;hnlichen Leuchte finden.</p>
-<p>Manche Leuchten gehen <b>nicht</b> mit dem Ein-Befehl an, sondern nur mit
-einem Farbbefehl. Wenn <i>Einschalten</i> nichts bewirkt, probieren Sie
-<i>Farbe senden</i>.</p>
+<h3><TMPL_VAR HILFE.K19></h3>
+<p><TMPL_VAR HILFE.K20></p>
+<p><TMPL_VAR HILFE.K21></p>
+<p><TMPL_VAR HILFE.K22></p>
 
-<h3>Herkunft der Angaben</h3>
-<p>Die dokumentierte LAN-Schnittstelle stammt aus der Herstelleranleitung
-(<span class="sm-mono">app-h5.govee.com/user-manual/wlan-guide</span>), die
-ptReal-Systematik und alle aufgezeichneten Szenen aus dem Beitrag
-<i>Govee: BLE &gt; local API &mdash; Segmentsteuerung / Szenen</i> von MarkusCosi im
-Loxforum, die Cloud-Schnittstelle aus
-<span class="sm-mono">developer.govee.com/reference</span>. Nichts davon ist
-geraten.</p>
+<h3><TMPL_VAR HILFE.K23></h3>
+<p><TMPL_VAR HILFE.K24></p>
