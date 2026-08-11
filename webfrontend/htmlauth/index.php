@@ -593,7 +593,7 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="steuerung_ein" value="1"<?= !empty($gv_cfg['steuerung_ein']) ? ' checked' : '' ?>>
   <?= gv_e(gv_t('EINST.L_STEUERUNG')) ?></label>
-  <div class="sm-hilfe"><?= gv_t('EINST.H_STEUERUNG') ?></div>
+  <div class="sm-hilfe"><?= gv_t('EINST.H_STEUERUNG_HILFE') ?></div>
 </div>
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="pt_frei" value="1"<?= !empty($gv_cfg['pt_frei']) ? ' checked' : '' ?>>
