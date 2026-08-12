@@ -58,4 +58,13 @@ if [ -s "$NETZ_CFG/govee.json" ]; then
 fi
 echo "<INFO> Zweitschrift der Einstellungen angelegt."
 
+
+# NICHT MITGELIEFERTE Dateien - und gerade deshalb die wichtigen.
+# Das Archiv liefert sie nie, also standen sie bis jetzt auf keiner Liste;
+# geloescht werden sie vom Installer trotzdem, samt Token und Zugangsdaten.
+if [ -s "$NETZ_CFG/geheim.json" ]; then
+    cp -p "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null \
+        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null
+fi
+
 exit 0
