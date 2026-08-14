@@ -187,17 +187,10 @@ if ($gv_post && isset($_POST['speichern'])) {
         $gv_cfg[$gv_feld] = $gv_zahl;
     }
 
-    $gv_cfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $gv_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $gv_cfg['pt_frei'] = isset($_POST['pt_frei']) ? 1 : 0;
     $gv_cfg['cloud_ein'] = isset($_POST['cloud_ein']) ? 1 : 0;
 
-    $gv_topic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $_POST['mqtt_topic']));
-    if ($gv_topic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $gv_topic)) {
-        $gv_fehler[] = gv_t('EINST.FEHLER_TOPIC');
-    } else {
-        $gv_cfg['mqtt_topic'] = trim($gv_topic, '/');
-    }
 
     /* Der Cloud-Schluessel steht in einer eigenen Datei mit Rechten 0600.
      * Ein leeres Feld loescht nichts - sonst stuende irgendwann ein leerer
@@ -232,6 +225,37 @@ if ($gv_post && isset($_POST['speichern'])) {
         }
     }
     $gv_tab = 'tab-settings';
+
+    /* mqtt_ein und mqtt_topic werden hier bewusst NICHT angefasst: sie wohnen im
+     * Reiter MQTT und haben dort ein eigenes Formular. Die Konfiguration
+     * kommt aus gv_config(), die Werte ueberleben also unveraendert. Stuende
+     * hier weiter "isset($_POST['mqtt_ein']) ? 1 : 0", wuerde jedes Speichern
+     * der Einstellungen MQTT stillschweigend abschalten. */
+}
+
+/* ---------------- MQTT (eigener Reiter, eigenes Formular) ----------------
+ *
+ * Eigenes Formular UND eigener Handler gehoeren zusammen. Loesten beide
+ * Formulare denselben Handler aus, setzte dieser die Haken des jeweils
+ * nicht abgeschickten Formulars per isset() auf 0 - der Benutzer verloere
+ * Werte, die er nie gesehen hat. Der Handler laedt darum den Bestand und
+ * ruehrt ausschliesslich die MQTT-Werte an. */
+if ($gv_post && isset($_POST['save_mqtt'])) {
+    $gv_mcfg = gv_config();
+    $gv_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    $gv_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
+        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    if ($gv_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $gv_mtopic)) {
+        $gv_fehler[] = gv_t('EINST.FEHLER_TOPIC');
+    } else {
+        $gv_mcfg['mqtt_topic'] = trim($gv_mtopic, '/');
+    }
+    if (!$gv_fehler) {
+        if (gv_config_speichern($gv_mcfg)) {
+        $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
+        }
+    }
+    $gv_tab = 'tab-mqtt';
 }
 
 /* ---------------- Gefundene Geraete uebernehmen ---------------- */
@@ -601,16 +625,8 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
   <div class="sm-hilfe"><?= gv_t('EINST.H_PTFREI') ?></div>
 </div>
 
-<h2>MQTT</h2>
-<div class="sm-feld">
-  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= !empty($gv_cfg['mqtt_ein']) ? ' checked' : '' ?>>
-  <?= gv_e(gv_t('EINST.L_MQTT')) ?></label>
-</div>
-<div class="sm-feld">
-  <label for="mqtt_topic"><?= gv_e(gv_t('EINST.L_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= gv_e($gv_cfg['mqtt_topic']) ?>">
-  <div class="sm-hilfe"><?= gv_t('EINST.H_TOPIC') ?></div>
-</div>
+<?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
+         vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
 
 <h2><?= gv_e(gv_t('EINST.H_CLOUD')) ?></h2>
 <div class="sm-warnung"><?= gv_t('EINST.CLOUD_WARNUNG') ?></div>
@@ -647,6 +663,25 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $gv_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
+
+<h2>MQTT</h2>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="save_mqtt" value="1">
+<input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= !empty($gv_cfg['mqtt_ein']) ? ' checked' : '' ?>>
+  <?= gv_e(gv_t('EINST.L_MQTT')) ?></label>
+</div>
+<div class="sm-feld">
+  <label for="mqtt_topic"><?= gv_e(gv_t('EINST.L_TOPIC')) ?></label>
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= gv_e($gv_cfg['mqtt_topic']) ?>">
+  <div class="sm-hilfe"><?= gv_t('EINST.H_TOPIC') ?></div>
+</div>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= gv_t('LEGENDE.AKTION') ?></span></div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= gv_e(gv_t('ALLG.SPEICHERN')) ?></button>
+</div>
+</form>
 <h2><?= gv_e(gv_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= gv_t('MQTT.ERKLAERUNG') ?></p>
 <table class="sm-tbl">
