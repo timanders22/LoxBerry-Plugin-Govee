@@ -44,11 +44,16 @@
  * Laengere Befehle werden auf mehrere solcher Bloecke verteilt (a3-Pakete).
  *
  * Nachgebaute Protokolle werden gegen das Original gemessen, nicht gegen die
- * eigene Vorstellung davon (Hausregel). Die Funktion gv_selbsttest_faelle()
- * enthaelt deshalb 34 Faelle, deren Sollwert im Forumsbeitrag steht - vom
- * einfachen Ein/Aus ueber die Szene "Aurora" bis zu allen fuenfzehn Stufen
- * des Prozentbalkens. Der Knopf "Selbsttest" im Reiter Test rechnet sie durch
- * und vergleicht Zeichen fuer Zeichen. Am 09.08.2026 stimmten alle 34.
+ * eigene Vorstellung davon (Hausregel). gv_selbsttest_faelle() enthaelt
+ * deshalb 25 Faelle, deren Sollwert im Forumsbeitrag steht - vom einfachen
+ * Ein/Aus ueber die Szene "Aurora" bis zu allen fuenfzehn Stufen des
+ * Prozentbalkens; dazu kommen die 14 Eintraege des Szenenkatalogs, macht 39.
+ * Der Knopf "Selbsttest" im Reiter Test rechnet sie durch und vergleicht
+ * Zeichen fuer Zeichen. Am 20.08.2026 stimmten alle 39, unter PHP 7.4.
+ *
+ * Die Zahl stand hier bis 0.9.8 als 34 - das Programm gab damals schon 39
+ * aus. Eine Zahl im Kommentar, die der eigenen Ausgabe widerspricht, schickt
+ * den naechsten Leser auf die falsche Faehrte.
  *
  * Praefix 'gv_', weil LBWeb::lbheader() SDK-Globale setzt.
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
@@ -185,6 +190,8 @@ function gv_vorgaben()
         'aktionstoken'  => '',
         'wartezeit'     => 6,
         'pt_frei'       => 0,      // rohe ptReal-Befehle ueber den Endpunkt?
+        'szenen'        => array(), // selbst hinterlegte Szenen
+        'mitschnitt_bis' => 0,     // Unixzeit; 0 = aus. Laeuft von selbst ab.
     );
 }
 
@@ -236,16 +243,90 @@ function gv_json_schreiben($pfad, $daten, $rechte = null)
     return true;
 }
 
-function gv_config()
+/**
+ * Wie stand die Konfiguration beim letzten Lesen da?
+ *
+ *   ok            gelesen, gueltig
+ *   leer          nicht vorhanden oder {} - der Zustand nach der Installation
+ *   zweitschrift  aus der Sicherung geholt
+ *   kaputt        vorhanden, aber kein gueltiges JSON
+ *
+ * Die Lage wird gebraucht, weil sie darueber entscheidet, ob die Zweitschrift
+ * angefasst werden darf.
+ */
+function gv_config_lage($setzen = null)
+{
+    static $lage = 'ok';
+    if ($setzen !== null) {
+        $lage = $setzen;
+    }
+    return $lage;
+}
+
+/**
+ * Die Konfiguration lesen.
+ *
+ * $heilen = false liest nur. Das ist die Betriebsart des unangemeldeten
+ * Endpunkts: wer sich nicht ausweisen kann, legt nichts an und schreibt
+ * nichts - auch nichts Harmloses. Gemessen am 20.08.2026: ein einziger Aufruf
+ * OHNE Token, korrekt mit 403 beantwortet, hat die Konfiguration aus der
+ * Sicherung zurueckgeschrieben.
+ *
+ * Ungueltiges JSON ist ein FEHLER, kein leerer Wert. Vorher wurde daraus
+ * stillschweigend array(), daraus per array_merge die Werkseinstellung, und
+ * weil damit das Token fehlte, erzeugte gv_token() ein neues und schrieb es
+ * samt Zweitschrift zurueck. Gemessen: Geraete weg, alle Loxone-Adressen
+ * ungueltig, Sicherung vernichtet, kein Wort im Protokoll.
+ */
+function gv_config($heilen = true)
 {
     $p = gv_paths();
-    // Selbstheilung: fehlende oder leere Konfiguration aus der Sicherung holen.
     $roh = is_file($p['config']) ? trim((string) @file_get_contents($p['config'])) : '';
-    if (($roh === '' || $roh === '{}') && is_file($p['sicherung'])) {
-        @mkdir($p['configdir'], 0775, true);
-        @copy($p['sicherung'], $p['config']);
+    $daten = null;
+    $lage = 'ok';
+
+    if ($roh !== '') {
+        $daten = json_decode($roh, true);
+        if (!is_array($daten)) {
+            $lage = 'kaputt';
+            $daten = null;
+            if ($heilen) {
+                /* Die beschaedigte Datei bleibt als .kaputt liegen - sie ist
+                 * das einzige Stueck Beweis, wenn jemand hinterher fragt, was
+                 * verloren ging. Und sie wird aus dem Weg geraeumt, damit der
+                 * naechste Aufruf nicht wieder ueber sie stolpert. */
+                @rename($p['config'], $p['config'] . '.kaputt');
+                gv_log_gebremst('cfg_kaputt', 'Die Konfiguration war kein gueltiges JSON. '
+                    . 'Sie liegt jetzt als ' . basename($p['config']) . '.kaputt daneben; '
+                    . 'weitergearbeitet wird mit der Zweitschrift.');
+            }
+        } elseif (!$daten) {
+            $lage = 'leer';
+            $daten = null;
+        }
+    } else {
+        $lage = 'leer';
     }
-    return array_merge(gv_vorgaben(), gv_json_lesen($p['config']));
+
+    if ($daten === null) {
+        /* Die Zweitschrift wird GELESEN, nicht kopiert. Erst wenn das Lesen
+         * gelungen ist, wird sie - und nur wo Schreiben erlaubt ist - wieder
+         * als Konfiguration hingelegt. */
+        $z = gv_json_lesen($p['sicherung']);
+        if ($z) {
+            $daten = $z;
+            $lage = 'zweitschrift';
+            if ($heilen) {
+                @mkdir($p['configdir'], 0775, true);
+                gv_json_schreiben($p['config'], $z, 0600);
+                gv_log_gebremst('cfg_geheilt',
+                    'Die Konfiguration wurde aus der Zweitschrift wiederhergestellt.');
+            }
+        }
+    }
+
+    gv_config_lage($lage);
+    return array_merge(gv_vorgaben(), is_array($daten) ? $daten : array());
 }
 
 function gv_config_speichern($cfg)
@@ -253,6 +334,12 @@ function gv_config_speichern($cfg)
     $p = gv_paths();
     if (!gv_json_schreiben($p['config'], $cfg, 0600)) {
         return false;
+    }
+    /* Die Zweitschrift wird NICHT aufgefrischt, solange die Lage unklar ist.
+     * Sonst schreibt ein Stand, der aus der Werkseinstellung entstanden ist,
+     * die letzte heile Sicherung tot - genau die Kette, die oben steht. */
+    if (gv_config_lage() === 'kaputt') {
+        return true;
     }
     @copy($p['config'], $p['sicherung']);
     @chmod($p['sicherung'], 0600);
@@ -304,10 +391,22 @@ function gv_geraete()
             continue;
         }
         $n++;
-        $out[$n] = array(
-            'nr'     => $n,
+        /* Die Nummer ist eine ADRESSE, keine Aufzaehlung. Sie steht in der
+         * Konfiguration; fehlt sie (jede Anlage vor 0.9.9), wird die
+         * bisherige Zaehlung genommen - dann bleibt alles, wie es war, bis
+         * einmal gespeichert wird. Danach wandert eine Nummer nie mehr. */
+        $nr = (isset($g['nr']) && (int) $g['nr'] > 0 && !isset($out[(int) $g['nr']]))
+            ? (int) $g['nr'] : 0;
+        if ($nr === 0) {
+            $nr = $n;
+            while (isset($out[$nr])) {
+                $nr++;
+            }
+        }
+        $out[$nr] = array(
+            'nr'     => $nr,
             'name'   => trim((string) (isset($g['name']) ? $g['name'] : '')) !== ''
-                        ? trim((string) $g['name']) : ('Govee ' . $n),
+                        ? trim((string) $g['name']) : ('Govee ' . $nr),
             'art'    => $art,
             'ip'     => $ip,
             'sku'    => $sku,
@@ -315,8 +414,14 @@ function gv_geraete()
             'pixel'  => isset($g['pixel']) ? max(0, min(200, (int) $g['pixel'])) : 0,
             'kmin'   => isset($g['kmin']) && $g['kmin'] !== '' ? max(1000, min(10000, (int) $g['kmin'])) : 2700,
             'kmax'   => isset($g['kmax']) && $g['kmax'] !== '' ? max(1000, min(10000, (int) $g['kmax'])) : 6500,
+            /* Manche Leuchten gehen nicht mit 'turn' an - das steht seit jeher
+             * unter den bekannten Grenzen im README. Fuer sie gibt es den
+             * ptReal-Weg (33 01 xx und 33 04 xx), und der lag bis 0.9.8
+             * fertig und geprueft im Code, ohne dass ihn irgendetwas aufrief. */
+            'pt'     => (isset($g['pt']) && (int) $g['pt'] === 1) ? 1 : 0,
         );
     }
+    ksort($out);
     return $out;
 }
 
@@ -325,6 +430,41 @@ function gv_geraet($nr)
     $g = gv_geraete();
     $nr = max(1, (int) $nr);
     return isset($g[$nr]) ? $g[$nr] : null;
+}
+
+/**
+ * Die naechste freie Geraetenummer. Vergebene Nummern werden nie wieder
+ * ausgegeben, auch nicht nach dem Entfernen des Geraets - sonst zeigte ein
+ * bestehender virtueller Eingang auf eine andere Leuchte.
+ */
+function gv_naechste_nummer($cfg)
+{
+    $hoechste = 0;
+    foreach ((array) (isset($cfg['geraete']) ? $cfg['geraete'] : array()) as $g) {
+        if (is_array($g) && isset($g['nr'])) {
+            $hoechste = max($hoechste, (int) $g['nr']);
+        }
+    }
+    if (isset($cfg['nr_hoechste'])) {
+        $hoechste = max($hoechste, (int) $cfg['nr_hoechste']);
+    }
+    return $hoechste + 1;
+}
+
+/**
+ * Die letzte Stoerung quittieren.
+ *
+ * Sie bleibt sonst stehen, bis jemand sie liest - das ist Absicht: der
+ * Waechter startet den Dienst binnen einer Minute neu, und bis 0.9.8 loeschte
+ * der erste geglueckte Durchlauf die Ursache, bevor jemand hinsehen konnte.
+ */
+function gv_stoerung_quittieren()
+{
+    $pfad = gv_paths()['datadir'] . '/zustand.json';
+    $z = gv_json_lesen($pfad);
+    $z['fehler'] = '';
+    $z['fehler_ts'] = 0;
+    return gv_json_schreiben($pfad, $z);
 }
 
 /* Zufallstoken fuer den unangemeldeten Endpunkt. */
@@ -348,6 +488,23 @@ function gv_token()
     return (string) $cfg['aktionstoken'];
 }
 
+/**
+ * Das Merkmal, das jedes Formular der Oberflaeche mitschickt.
+ *
+ * Abgeleitet aus dem Aktionstoken, das ohnehin geheim ist und die Anlage nie
+ * verlaesst. Fehlt es, gibt es nichts zu vergleichen - dann liefert diese
+ * Funktion einen Leerstring, und die Pruefung weist ab. hash_equals('', '')
+ * waere sonst wahr, und der Schutz fiele offen aus.
+ */
+function gv_formtoken($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = gv_config();
+    }
+    $t = trim((string) (isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : ''));
+    return $t === '' ? '' : hash_hmac('sha256', 'formular-v1', $t);
+}
+
 /* ==================================================================
  * Zwischenspeicher
  * ================================================================== */
@@ -362,15 +519,107 @@ function gv_zustand()
     return gv_json_lesen(gv_paths()['datadir'] . '/zustand.json');
 }
 
+/**
+ * Die zuletzt abgeholte Cloud-Geraeteliste, aufbereitet.
+ *
+ * Bis 0.9.8 schrieb der Dienst cloud.json und niemand las sie - dabei stehen
+ * genau darin SKU und Geraetekennung, die man zum Eintragen von Hand braucht.
+ *
+ * Rueckgabe: array(Liste, Zeitstempel)
+ */
+function gv_cloud_liste()
+{
+    $c = gv_json_lesen(gv_paths()['datadir'] . '/cloud.json');
+    $roh = isset($c['antwort']['data']) && is_array($c['antwort']['data'])
+        ? $c['antwort']['data'] : array();
+    $liste = array();
+    foreach ($roh as $g) {
+        if (!is_array($g) || !isset($g['device'])) {
+            continue;
+        }
+        $liste[] = array(
+            'sku'    => isset($g['sku']) ? (string) $g['sku'] : '',
+            'device' => (string) $g['device'],
+            'name'   => isset($g['deviceName']) ? (string) $g['deviceName'] : '',
+        );
+    }
+    return array($liste, isset($c['ts']) ? (int) $c['ts'] : 0);
+}
+
 function gv_gefunden()
 {
     return gv_json_lesen(gv_paths()['datadir'] . '/gefunden.json');
 }
 
+/**
+ * Grenze, ab der ein Wert als veraltet gilt.
+ *
+ * Deutlich ueber dem Abruftakt, damit ein einzelner verpasster Durchlauf noch
+ * keine Ausfallmeldung ausloest - dieselbe Ueberlegung wie fuer die Schwelle
+ * im Loxone-Baustein.
+ */
+function gv_altersgrenze($cfg = null, $art = 'lan')
+{
+    if ($cfg === null) {
+        $cfg = gv_config();
+    }
+    if ($art === 'cloud') {
+        /* Der Cloud-Takt zaehlt in MINUTEN. Mit der LAN-Grenze stuende ein
+         * Cloud-Geraet zwischen zwei Abrufen dauerhaft auf veraltet. */
+        return max(180, 3 * max(1, (int) $cfg['cloud_takt']) * 60);
+    }
+    return max(60, 3 * max(5, (int) $cfg['intervall']));
+}
+
+/**
+ * Die Geraetewerte, wie Endpunkt, Oberflaeche und Selbstpruefung sie sehen.
+ * EINE Quelle fuer alle drei.
+ *
+ * 'alter' wird hier zur LESEZEIT gerechnet und nicht beim Schreiben
+ * eingefroren. Vorher stand im Abbild 'alter' => 0, und der Endpunkt gab genau
+ * diese Null weiter: ein seit Stunden toter Dienst war damit von einer frischen
+ * Messung nicht zu unterscheiden - OK=1, ALTER=0, und in der Loxone-App sah
+ * alles normal aus. Gemessen am 20.08.2026 mit einem drei Stunden alten Abbild:
+ * dieselbe Zeile wie im Kontrollfall mit frischem Abbild.
+ *
+ * Aus demselben Grund ist 'ok' abgeleitet und nicht uebernommen. Es beantwortet
+ * die Frage, die der Anwender stellt - "ist dieser Wert aktuell?" -, nicht die,
+ * die der Dienst beim Schreiben beantworten konnte.
+ */
 function gv_werte()
 {
     $l = gv_loxone();
-    return isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+    $g = isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+    if (!is_array($g)) {
+        return array();
+    }
+    $cfg = gv_config();
+    $jetzt = time();
+    foreach ($g as $nr => $e) {
+        if (!is_array($e)) {
+            unset($g[$nr]);
+            continue;
+        }
+        $grenze = gv_altersgrenze($cfg, isset($e['art']) ? (string) $e['art'] : 'lan');
+        $ts = isset($e['ts']) ? (int) $e['ts'] : 0;
+        $g[$nr]['alter'] = $ts > 0 ? max(0, $jetzt - $ts) : -1;
+        $g[$nr]['ok']    = ($ts > 0 && ($jetzt - $ts) <= $grenze) ? 1 : 0;
+        $g[$nr]['fehl']  = isset($e['fehl']) ? max(0, (int) $e['fehl']) : 0;
+    }
+    return $g;
+}
+
+/**
+ * Wie lange ist die letzte Runde des Dienstes her? -1, wenn es keine gab.
+ *
+ * Das Lebenszeichen beantwortet etwas anderes als die Prozessnummer: ein
+ * Prozess kann dastehen und nichts mehr tun. Geschrieben wird es in jeder
+ * Runde von gv_zustand_schreiben().
+ */
+function gv_dienst_lebenszeichen()
+{
+    $z = gv_zustand();
+    return isset($z['ts']) ? max(0, time() - (int) $z['ts']) : -1;
 }
 
 /** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
@@ -550,6 +799,272 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
     return array(2, 'Eingereiht, aber der Dienst hat innerhalb von ' . $wartezeit . ' s nicht geantwortet.');
 }
 
+/**
+ * Eine Segmentangabe der Form "1-3:ff0000,7:00ff00" auswerten.
+ *
+ * Pixel werden 1-basiert angegeben, weil der Anwender sie so zaehlt; intern
+ * sind die Kennungen 0-basiert. Was nicht ins Muster passt, wird abgewiesen
+ * und gemeldet - nie zurechtgebogen.
+ *
+ * Rueckgabe: array(Segmente|null, Meldung)
+ */
+function gv_segmente_lesen($text, $pixel)
+{
+    $segmente = array();
+    $teile = explode(',', (string) $text);
+    if (count($teile) > 20) {
+        return array(null, 'Mehr als 20 Segmente sind nicht vorgesehen.');
+    }
+    foreach ($teile as $t) {
+        $t = trim($t);
+        if ($t === '') {
+            continue;
+        }
+        if (!preg_match('/^([0-9]{1,3})(?:-([0-9]{1,3}))?:([0-9a-fA-F]{6})$/', $t, $m)) {
+            return array(null, 'Der Abschnitt "' . $t . '" passt nicht ins Muster '
+                . 'Pixel:RRGGBB oder VonPixel-BisPixel:RRGGBB.');
+        }
+        $von = (int) $m[1];
+        /* Erst isset, dann vergleichen: nimmt die optionale Gruppe nicht
+         * teil, fehlt $m[2] ganz - unter PHP 8 waere der Zugriff davor eine
+         * Warnung. */
+        $bis = (!isset($m[2]) || $m[2] === '') ? $von : (int) $m[2];
+        if ($von < 1 || $bis < $von || $bis > $pixel) {
+            return array(null, 'Der Abschnitt "' . $t . '" liegt ausserhalb von 1 bis ' . $pixel . '.');
+        }
+        $ids = array();
+        for ($i = $von; $i <= $bis; $i++) {
+            $ids[] = $i - 1;
+        }
+        $segmente[] = array('ids' => $ids, 'rgb' => array(
+            hexdec(substr($m[3], 0, 2)), hexdec(substr($m[3], 2, 2)), hexdec(substr($m[3], 4, 2))));
+    }
+    if (!$segmente) {
+        return array(null, 'Es wurde kein Segment angegeben.');
+    }
+    return array($segmente, '');
+}
+
+/**
+ * Pflichtangaben je Aktion.
+ *
+ * Der Endpunkt prueft sie bereits, aber die Warteschlange liegt im
+ * Dateisystem - eine unvollstaendige Datei darf keine Warnung ausloesen,
+ * sondern muss eine Meldung ergeben. Rueckgabe: array(ok, Meldung).
+ */
+function gv_befehl_pruefen($aktion, $b)
+{
+    /* Pflichtangaben je Aktion. Der Endpunkt prueft sie bereits, aber die
+     * Warteschlange liegt im Dateisystem - eine unvollstaendige Datei darf
+     * hier keine Warnung ausloesen, sondern muss eine Meldung ergeben. */
+    $braucht = array(
+        'hell'    => array('wert'),
+        'kelvin'  => array('wert'),
+        'balken'  => array('wert'),
+        /* 'farbe' nimmt entweder r/g/b oder eine Zahl - deshalb keine feste
+         * Pflichtangabe, sondern die Pruefung unten. */
+        /* 'szene' braucht entweder einen Namen oder eine Kennung - deshalb
+         * steht sie hier nicht mit einer festen Pflichtangabe. */
+        'segment' => array('segmente'),
+        'pt'      => array('cmd'),
+    );
+    if (isset($braucht[$aktion])) {
+        foreach ($braucht[$aktion] as $pflicht) {
+            if (!isset($b[$pflicht])) {
+                return array(0, 'Dem Befehl ' . $aktion . ' fehlt die Angabe ' . $pflicht . '.');
+            }
+        }
+    }
+    if ($aktion === 'szene' && !isset($b['name']) && !isset($b['nr'])) {
+        return array(0, 'Dem Befehl szene fehlt der Name oder die Kennung.');
+    }
+    if ($aktion === 'farbe' && !isset($b['wert'])
+        && (!isset($b['r']) || !isset($b['g']) || !isset($b['b']))) {
+        return array(0, 'Dem Befehl farbe fehlen r, g und b oder die Zahl wert.');
+    }
+    return array(1, '');
+}
+
+/**
+ * Die Nachricht fuer eine Aktion bauen - OHNE zu senden.
+ *
+ * Genau diese Funktion benutzen der Dienst und der Trockenlauf im Reiter
+ * Test. Sie oeffnet keine Verbindung und braucht keinen laufenden Dienst;
+ * gerade dann will man wissen, was ein Befehl taete.
+ *
+ * Rueckgabe: array(Nachricht|null, Meldung).
+ */
+function gv_nachricht_bauen($aktion, $g, $b, $cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = gv_config();
+    }
+    $nachricht = null;
+    switch ($aktion) {
+        /* Bei Geraeten mit dem Schalter 'pt' gehen Ein/Aus und Helligkeit als
+         * ptReal-Befehl hinaus. Das README nennt es seit jeher unter den
+         * bekannten Grenzen: manche Leuchten gehen nicht mit 'turn' an. Der
+         * Ausweichweg lag fertig und geprueft im Code und war bis 0.9.8 ueber
+         * keinen Knopf, keine Aktion und keine Vorlage auszuloesen. */
+        case 'ein':
+            $nachricht = $g['pt'] ? gv_pt_nachricht(gv_pt_schalten(1)) : gv_cmd_schalten(1);
+            break;
+        case 'aus':
+            $nachricht = $g['pt'] ? gv_pt_nachricht(gv_pt_schalten(0)) : gv_cmd_schalten(0);
+            break;
+        case 'hell':
+            $hw = (int) $b['wert'];
+            if ($hw <= 0) {
+                /* Loxones Lichtsteuerung schickt beim Ausschalten eine 0. Die
+                 * LAN-Schnittstelle nimmt Helligkeit nur von 1 bis 100 - eine
+                 * 0 ergab bisher die kleinste Stufe statt Dunkelheit, und der
+                 * Anwender brauchte dafuer einen Begrenzer in Loxone. Auf
+                 * diesem Weg heisst 0 jetzt aus. Der unmittelbare UDP-Weg
+                 * kann das nicht: dort geht der Rohwert an die Leuchte. */
+                $nachricht = $g['pt'] ? gv_pt_nachricht(gv_pt_schalten(0)) : gv_cmd_schalten(0);
+                break;
+            }
+            $nachricht = $g['pt']
+                ? gv_pt_nachricht(gv_pt_helligkeit($hw))
+                : gv_cmd_helligkeit($hw);
+            break;
+        case 'kelvin':
+            $k = (int) $b['wert'];
+            if ($k < $g['kmin'] || $k > $g['kmax']) {
+                return array(null, sprintf('%d K liegt ausserhalb des eingestellten Bereichs %d bis %d K.',
+                    $k, $g['kmin'], $g['kmax']));
+            }
+            $nachricht = gv_cmd_kelvin($k);
+            break;
+        case 'farbe':
+            if (!isset($b['r']) && isset($b['wert'])) {
+                /* Farbe als eine Zahl: r*65536 + g*256 + b. Ein virtueller
+                 * Ausgang traegt genau einen Analogwert, drei Kanaele passen
+                 * anders nicht durch. In Loxone rechnet ein Formel-Baustein
+                 * die drei Ausgaenge des Lichtszene-Bausteins zusammen. */
+                $z = max(0, min(16777215, (int) $b['wert']));
+                $b['r'] = ($z >> 16) & 0xFF;
+                $b['g'] = ($z >> 8) & 0xFF;
+                $b['b'] = $z & 0xFF;
+            }
+            $nachricht = gv_cmd_farbe((int) $b['r'], (int) $b['g'], (int) $b['b']);
+            break;
+
+        case 'szene':
+            /* Zwei Wege: ein Schluessel aus dem Katalog (auch aus den selbst
+             * hinterlegten Szenen) ODER eine blanke Kennung 0..255. Die
+             * Kennung gibt es, weil gv_pt_szene_einfach() den Befehl
+             * 33 05 04 <ID> baut - fertig und geprueft, aber bis 0.9.8 nur
+             * vom Selbsttest aufgerufen. Wer die Kennung seiner Leuchte
+             * kennt, kommt damit ohne Katalogeintrag aus. */
+            if (isset($b['nr']) && $b['nr'] !== '') {
+                $id = (int) $b['nr'];
+                $cmds = gv_pt_szene_einfach($id);
+                if ($cmds === null) {
+                    return array(null, 'Eine Szenenkennung liegt zwischen 0 und 255, angekommen ist ' . $id . '.');
+                }
+                $nachricht = gv_pt_nachricht($cmds);
+                break;
+            }
+            $szenen = gv_szenen_alle($cfg);
+            $s = isset($b['name']) ? (string) $b['name'] : '';
+            if (!isset($szenen[$s])) {
+                return array(null, 'Die Szene "' . $s . '" steht nicht im Katalog.');
+            }
+            $nachricht = gv_pt_nachricht($szenen[$s]['cmd']);
+            break;
+
+        case 'balken':
+            if ($g['pixel'] < 1) {
+                return array(null, 'Fuer ' . $g['name'] . ' ist keine Pixelzahl hinterlegt - '
+                    . 'ohne sie laesst sich kein Balken bauen (Reiter Einstellungen).');
+            }
+            $rgb = array(0x64, 0x64, 0x00);
+            if (isset($b['hex']) && preg_match('/^[0-9a-fA-F]{6}$/', (string) $b['hex'])) {
+                $rgb = array(hexdec(substr($b['hex'], 0, 2)), hexdec(substr($b['hex'], 2, 2)),
+                             hexdec(substr($b['hex'], 4, 2)));
+            }
+            $cmds = gv_pt_balken((int) $b['wert'], $rgb, $g['pixel']);
+            if ($cmds === null) {
+                return array(null, 'Der Balkenbefehl liess sich nicht bauen.');
+            }
+            $nachricht = gv_pt_nachricht($cmds);
+            break;
+
+        case 'segment':
+            if ($g['pixel'] < 1) {
+                return array(null, 'Fuer ' . $g['name'] . ' ist keine Pixelzahl hinterlegt.');
+            }
+            list($segmente, $meldung) = gv_segmente_lesen(isset($b['segmente']) ? $b['segmente'] : '',
+                                                          $g['pixel']);
+            if ($segmente === null) {
+                return array(null, $meldung);
+            }
+            /* Zweites Verfahren: Segmente als Bitmaske (H70C4 und Verwandte).
+             * Dort werden die Segmente ab 1 gezaehlt, nicht ab 0 - deshalb
+             * die Kennungen um eins zurueckdrehen. */
+            $verfahren = isset($b['verfahren']) ? (string) $b['verfahren'] : 'graffiti';
+            if ($verfahren === 'maske') {
+                $gruppen = array();
+                foreach ($segmente as $s) {
+                    $nummern = array();
+                    foreach ($s['ids'] as $id) {
+                        $nummern[] = $id + 1;
+                    }
+                    $gruppen[] = array('nummern' => $nummern, 'rgb' => $s['rgb']);
+                }
+                $cmds = gv_pt_segment_maske($gruppen,
+                    isset($b['hgint']) ? (int) $b['hgint'] : null);
+                if ($cmds === null) {
+                    return array(null, 'Das Maskenverfahren fasst nur die Segmente 1 bis 16.');
+                }
+                $nachricht = gv_pt_nachricht($cmds);
+                break;
+            }
+            $hg = array(0, 0, 0);
+            if (isset($b['hg']) && preg_match('/^[0-9a-fA-F]{6}$/', (string) $b['hg'])) {
+                $hg = array(hexdec(substr($b['hg'], 0, 2)), hexdec(substr($b['hg'], 2, 2)),
+                            hexdec(substr($b['hg'], 4, 2)));
+            }
+            $cmds = gv_pt_graffiti(
+                isset($b['bewegung']) ? (int) $b['bewegung'] : 0x09,
+                isset($b['geschw']) ? (int) $b['geschw'] : 0,
+                isset($b['hgint']) ? (int) $b['hgint'] : 0,
+                $hg, $segmente);
+            if ($cmds === null) {
+                return array(null, 'Der Segmentbefehl passt nicht in die zulaessige Paketzahl.');
+            }
+            $nachricht = gv_pt_nachricht($cmds);
+            break;
+
+        case 'musik':
+            $cmds = gv_pt_musik(isset($b['gruppe']) ? (int) $b['gruppe'] : 0x0f,
+                                isset($b['art']) ? (int) $b['art'] : 0,
+                                isset($b['sens']) ? (int) $b['sens'] : 0x64);
+            if ($cmds === null) {
+                return array(null, 'Unbekannte Befehlsgruppe fuer den Musikbetrieb.');
+            }
+            $nachricht = gv_pt_nachricht($cmds);
+            break;
+
+        case 'pt':
+            if (empty($cfg['pt_frei'])) {
+                return array(null, 'Rohe ptReal-Befehle sind gesperrt (Reiter Einstellungen).');
+            }
+            $roh = isset($b['cmd']) ? (array) $b['cmd'] : array();
+            list($geprueft, $meldung) = gv_pt_pruefen($roh);
+            if ($geprueft === null) {
+                return array(null, $meldung);
+            }
+            $nachricht = gv_pt_nachricht($geprueft);
+            break;
+
+        default:
+            return array(null, 'Unbekannte Aktion: ' . $aktion);
+    }
+    return array($nachricht, '');
+}
+
 /* ==================================================================
  * LAN-Schnittstelle
  *
@@ -559,9 +1074,53 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
  * mb_strlen und ctype_digit.
  * ================================================================== */
 
+/* Obergrenze des Mitschnitts. log/plugins liegt auf einer Ramdisk - eine
+ * unbegrenzt wachsende Datei frisst Arbeitsspeicher, nicht Plattenplatz. */
+define('GV_MITSCHNITT_MAX', 262144);
+
+/**
+ * Ein Byte-Mitschnitt des UDP-Verkehrs.
+ *
+ * Bei einem nachgebauten Protokoll ist er das einzige Mittel, wenn ein Befehl
+ * nichts bewirkt: er zeigt, was wirklich hinausging und was zurueckkam.
+ *
+ * Drei Bedingungen, alle drei aus dem Hausstandard:
+ *   ab Werk aus       'mitschnitt_bis' steht auf 0
+ *   laeuft von selbst ab   es ist ein Zeitpunkt, kein Schalter
+ *   harte Obergrenze  bei GV_MITSCHNITT_MAX ist Schluss, mit einer letzten Zeile
+ */
+function gv_mitschnitt($richtung, $ip, $text, $cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = gv_config();
+    }
+    $bis = (int) (isset($cfg['mitschnitt_bis']) ? $cfg['mitschnitt_bis'] : 0);
+    if ($bis <= 0 || time() > $bis) {
+        return false;
+    }
+    $p = gv_paths();
+    $datei = $p['logdir'] . '/mitschnitt.log';
+    if (!is_dir($p['logdir'])) {
+        @mkdir($p['logdir'], 0775, true);
+    }
+    $gross = is_file($datei) ? (int) @filesize($datei) : 0;
+    if ($gross >= GV_MITSCHNITT_MAX) {
+        return false;
+    }
+    $zeile = sprintf("%s %-3s %-15s %4d Byte  %s\n",
+        date('H:i:s'), $richtung, $ip, strlen($text),
+        preg_replace('/[\x00-\x1F\x7F]/', '.', substr($text, 0, 900)));
+    if ($gross + strlen($zeile) >= GV_MITSCHNITT_MAX) {
+        $zeile .= "-- Obergrenze " . GV_MITSCHNITT_MAX . " Byte erreicht, der Mitschnitt endet hier.\n";
+    }
+    @file_put_contents($datei, $zeile, FILE_APPEND);
+    return true;
+}
+
 /** Rueckgabe: array(ok, Meldung). Ein Fehler ist ein Fehler, kein leerer Wert. */
 function gv_udp_senden($ip, $port, $text)
 {
+    gv_mitschnitt('->', $ip, $text);
     $fehlnr = 0;
     $fehltext = '';
     $s = @stream_socket_client('udp://' . $ip . ':' . (int) $port, $fehlnr, $fehltext, 2);
@@ -636,7 +1195,9 @@ function gv_udp_horchen($handle, $sekunden = 2, $max = 60)
         if (!is_array($j)) {
             continue;   // kein JSON: kein Wert, aber auch kein Grund zum Abbruch
         }
-        $out[] = array('von' => preg_replace('/:\d+$/', '', (string) $von), 'json' => $j);
+        $von_ip = preg_replace('/:\d+$/', '', (string) $von);
+        gv_mitschnitt('<-', $von_ip, $daten);
+        $out[] = array('von' => $von_ip, 'json' => $j);
     }
     return $out;
 }
@@ -1047,6 +1608,22 @@ function gv_pt_musik($gruppe, $art, $empfindlichkeit)
 }
 
 /**
+ * Die vier Befehlsgruppen des Musikbetriebs, mit ihrer Herkunft.
+ *
+ * Welche Form die eigene Leuchte versteht, sagt nur ein Versuch - deshalb
+ * steht die Gruppe zur Wahl und ist nicht fest verdrahtet.
+ */
+function gv_musikgruppen()
+{
+    return array(
+        0x0f => 'GV_MUSIK.G0F',
+        0x0c => 'GV_MUSIK.G0C',
+        0x01 => 'GV_MUSIK.G01',
+        0x13 => 'GV_MUSIK.G13',
+    );
+}
+
+/**
  * Szenenkatalog.
  *
  * Jede Zeile ist im Forumsbeitrag 446672 protokolliert - keine ist geraten
@@ -1125,6 +1702,72 @@ function gv_szenen()
             'owYH+P8QAcwBAIAAJkYAAAEAAZk=', 'owf/GAO7CgMC5TIFB/j/Cwf//y4=',
             'o/8G6Q//CNz/ERIB3QEAgAAAADY=', 'MwUE8QgAAAAAAAAAAAAAAAAAAMs=')),
     );
+}
+
+/**
+ * Die selbst hinterlegten Szenen.
+ *
+ * Der mitgelieferte Katalog stammt von drei Modellreihen; Govee vergibt die
+ * Kennungen je Reihe, bei einer vierten bewirken sie nichts oder etwas
+ * anderes. Wer die Befehlsfolge seiner eigenen Leuchte kennt, hinterlegt sie
+ * hier - geprueft wird sie mit derselben Funktion wie jede von aussen
+ * hereinkommende Liste: 20 Byte je Paket und die richtige XOR-Pruefsumme.
+ * Was nicht besteht, wird uebergangen und im Reiter Test benannt, nicht
+ * stillschweigend zurechtgebogen.
+ *
+ * Rueckgabe: array(schluessel => array(sku, name, cmd)) - 'name' ist hier
+ * bereits Klartext, kein Sprachschluessel.
+ */
+function gv_szenen_eigen($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = gv_config();
+    }
+    $out = array();
+    foreach ((array) (isset($cfg['szenen']) ? $cfg['szenen'] : array()) as $s) {
+        if (!is_array($s)) {
+            continue;
+        }
+        $schluessel = preg_replace('/[^a-z0-9_]/', '', strtolower((string)
+            (isset($s['schluessel']) ? $s['schluessel'] : '')));
+        $cmd = isset($s['cmd']) ? (array) $s['cmd'] : array();
+        if ($schluessel === '' || !$cmd) {
+            continue;
+        }
+        list($geprueft, $meldung) = gv_pt_pruefen($cmd);
+        if ($geprueft === null) {
+            continue;   // gemeldet wird das im Reiter Test, nicht hier
+        }
+        $out['eigen_' . $schluessel] = array(
+            'sku'  => trim((string) (isset($s['sku']) ? $s['sku'] : '')),
+            'name' => trim((string) (isset($s['name']) ? $s['name'] : '')) !== ''
+                      ? trim((string) $s['name']) : $schluessel,
+            'cmd'  => $geprueft,
+            'eigen' => 1,
+        );
+    }
+    return $out;
+}
+
+/**
+ * Aufgezeichneter Katalog UND eigene Szenen.
+ *
+ * Alles, was eine Szene AUSFUEHRT oder ANBIETET, nimmt diese Funktion.
+ * gv_szenen() bleibt dem Selbsttest vorbehalten: der misst den Nachbau gegen
+ * die aufgezeichneten Sollwerte, und Eingaben des Anwenders haben darin
+ * nichts zu suchen.
+ */
+function gv_szenen_alle($cfg = null)
+{
+    return array_merge(gv_szenen(), gv_szenen_eigen($cfg));
+}
+
+/** Der Anzeigename einer Szene - der Katalog traegt Sprachschluessel, die
+ *  eigenen Szenen tragen Klartext. */
+function gv_szene_name($szene)
+{
+    $n = isset($szene['name']) ? (string) $szene['name'] : '';
+    return !empty($szene['eigen']) ? $n : gv_t($n);
 }
 
 /** Die ptReal-Nachricht aus einer Liste base64-kodierter Befehle. */
@@ -1309,6 +1952,50 @@ function gv_selbsttest()
  * Schnittstelle - das gehoert in die Meldung, sonst sucht man den Fehler beim
  * Schluessel, der laengst stimmt.
  */
+/**
+ * Bis wann die Cloud gesperrt ist. 0 = frei.
+ *
+ * Die Sperre liegt im Datenverzeichnis, nicht in der Konfiguration: der
+ * unangemeldete Endpunkt darf nichts schreiben, und geaendert wird sie nur
+ * vom Dienst.
+ */
+function gv_cloud_sperre_lesen()
+{
+    $z = gv_json_lesen(gv_paths()['datadir'] . '/cloud_sperre.json');
+    return isset($z['bis']) ? (int) $z['bis'] : 0;
+}
+
+function gv_cloud_sperre_setzen($sekunden, $grund = '')
+{
+    return gv_json_schreiben(gv_paths()['datadir'] . '/cloud_sperre.json', array(
+        'bis'   => time() + max(1, (int) $sekunden),
+        'grund' => (string) $grund,
+        'ts'    => time(),
+    ));
+}
+
+/**
+ * Retry-After nach RFC 7231 lesen: entweder eine Sekundenzahl oder ein
+ * Zeitpunkt. Fehlt die Kopfzeile, wird grob gewartet - und diese Zahl ist
+ * NICHT gemessen, sondern gewaehlt; das steht hier, weil es sonst niemand
+ * unterscheiden koennte.
+ */
+function gv_retry_after($wert)
+{
+    $wert = trim((string) $wert);
+    if ($wert === '') {
+        return 300;   // nicht gemessen, gewaehlt
+    }
+    if (preg_match('/^[0-9]+$/', $wert)) {
+        return max(1, min(86400, (int) $wert));
+    }
+    $t = strtotime($wert);
+    if ($t !== false && $t > time()) {
+        return min(86400, $t - time());
+    }
+    return 300;       // nicht gemessen, gewaehlt
+}
+
 function gv_cloud_anfrage($pfad, $daten = null)
 {
     $g = gv_geheim();
@@ -1319,6 +2006,14 @@ function gv_cloud_anfrage($pfad, $daten = null)
     if (!function_exists('curl_init')) {
         return array(null, 'Die PHP-Erweiterung curl fehlt - ohne sie ist die Cloud nicht erreichbar.');
     }
+    /* Ein Kontingent wird abgewartet, nicht ignoriert. Wer im gleichen Takt
+     * weiter anklopft, verlaengert die Sperre. */
+    $sperre = gv_cloud_sperre_lesen();
+    if ($sperre > time()) {
+        return array(null, 'GESPERRT: Die Cloud hat die Anfragegrenze gemeldet. '
+            . 'Bis ' . date('H:i:s', $sperre) . ' wird nicht abgerufen ('
+            . ($sperre - time()) . ' s).');
+    }
     $ch = curl_init(GV_CLOUD . $pfad);
     $kopf = array(
         'Govee-API-Key: ' . $key,
@@ -1326,13 +2021,21 @@ function gv_cloud_anfrage($pfad, $daten = null)
         'Accept: application/json',
         'Accept-Language: de-DE,de;q=0.9,en;q=0.8',
         'Accept-Encoding: gzip, deflate',
-        'User-Agent: LoxBerry-Govee-Plugin/0.9.1',
+        'User-Agent: LoxBerry-Govee-Plugin/0.9.9',
     );
     curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_TIMEOUT, 15);
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+    $gv_kopfzeilen = array();
+    curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($unused, $zeile) use (&$gv_kopfzeilen) {
+        $teile = explode(':', $zeile, 2);
+        if (count($teile) === 2) {
+            $gv_kopfzeilen[strtolower(trim($teile[0]))] = trim($teile[1]);
+        }
+        return strlen($zeile);
+    });
     if ($daten !== null) {
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($daten));
@@ -1346,8 +2049,13 @@ function gv_cloud_anfrage($pfad, $daten = null)
         return array(null, 'Die Cloud war nicht erreichbar: ' . $curlfehler);
     }
     if ($code === 429) {
+        $warten = gv_retry_after(isset($gv_kopfzeilen['retry-after']) ? $gv_kopfzeilen['retry-after'] : '');
+        gv_cloud_sperre_setzen($warten, 'HTTP 429');
         return array(null, 'Die Cloud hat die Anfragegrenze gemeldet (HTTP 429). '
-            . 'Den Cloud-Takt im Reiter Einstellungen hoeher setzen.');
+            . 'Bis ' . date('H:i:s', time() + $warten) . ' wird nicht mehr abgerufen ('
+            . $warten . ' s'
+            . (isset($gv_kopfzeilen['retry-after']) ? ', aus Retry-After' : ', nicht gemessen')
+            . '). Den Cloud-Takt im Reiter Einstellungen hoeher setzen.');
     }
     if ($code === 401 || $code === 403) {
         return array(null, 'Die Cloud weist den API-Schluessel ab (HTTP ' . $code . ').');
@@ -1493,6 +2201,9 @@ function gv_mqtt_themen()
     return array(
         'ok'                => 'GV_MQTT.OK',
         'geraete'           => 'GV_MQTT.GERAETE',
+        'ts'                => 'GV_MQTT.TS',
+        'lebt'              => 'GV_MQTT.LEBT',
+        'fehler_folge'      => 'GV_MQTT.FEHLER_FOLGE',
         'geraetN/name'      => 'GV_MQTT.NAME',
         'geraetN/erreichbar' => 'GV_MQTT.ERREICHBAR',
         'geraetN/an'        => 'GV_MQTT.AN',
@@ -1503,6 +2214,24 @@ function gv_mqtt_themen()
         'geraetN/b'         => 'GV_MQTT.B',
         'geraetN/hex'       => 'GV_MQTT.HEX',
         'geraetN/alter'     => 'GV_MQTT.ALTER',
+        'geraetN/fehl'      => 'GV_MQTT.FEHL',
+    );
+}
+
+/**
+ * Die letzten Zeilen des Mitschnitts, neueste zuerst.
+ * Rueckgabe: array(Zeilen, Restlaufzeit in Sekunden, Dateigroesse).
+ */
+function gv_mitschnitt_lesen($anzahl = 200)
+{
+    $cfg = gv_config();
+    $p = gv_paths();
+    $datei = $p['logdir'] . '/mitschnitt.log';
+    $bis = (int) (isset($cfg['mitschnitt_bis']) ? $cfg['mitschnitt_bis'] : 0);
+    return array(
+        is_file($datei) ? gv_log_ende($datei, $anzahl) : array(),
+        max(0, $bis - time()),
+        is_file($datei) ? (int) @filesize($datei) : 0,
     );
 }
 
@@ -1514,10 +2243,16 @@ function gv_mqtt_themen()
  * den Kindelementen entsprechen dem geprueften PHP-Nachbau aus
  * LoxBerry-Plugin-APC-UPS (ap_xml_virtual_in_http).
  *
- * Die Bauform VirtualOut ist an den Mustern VQ_GOVEE_*.xml aus der laufenden
- * Anlage ausgerichtet: Comment und CmdOff stehen dort nur, wenn sie belegt
- * sind. Jene Musterdateien tragen LF als Zeilenende, der Nachbau CRLF - beide
- * Formen sind in Loxone Config eingelesen worden.
+ * Alle drei Bauformen sind seit dem 20.08.2026 an eigenen Ausfuhren aus
+ * Loxone Config gemessen, nicht an geerbten Mustern:
+ *   VirtualOut       VQU_Govee UDP-Ausgang_Test.xml (Adresse /dev/udp/...)
+ *   VirtualInHttp    VI_Rasenmaeher (LoxBerry-Plugin)_Test.xml
+ * Die aelteren Muster VQ_GOVEE_*.xml vom 03.07.2026 sind dafuer nicht mehr
+ * massgeblich - sie sind durch ein Werkzeug gelaufen, das sie normalisiert
+ * hat, und tragen den kurzen Attributsatz.
+ *
+ * Der UTF-8-BOM ist gemessen gleichgueltig: dieselbe Datei mit und ohne BOM
+ * wurde am 20.08.2026 beide eingelesen. Der Nachbau schreibt keinen.
  * ================================================================== */
 
 function gv_x($s)
@@ -1525,58 +2260,112 @@ function gv_x($s)
     return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
+/**
+ * Virtueller Ausgang.
+ *
+ * Gemessen am 20.08.2026 an einer eigenen Ausfuhr aus Loxone Config
+ * ("VO_Ausgang VQ1.xml", Adresse /dev/udp/192.0.2.10/4003). Bis dahin stand
+ * hier die kurze Form, weil der lange Attributsatz nur an einem HTTP-Ausgang
+ * belegt war und CmdOnMethod an einer Geraeteadresse wie eine Erfindung
+ * ausgesehen haette.
+ *
+ * Die Messung sagt: Config schreibt an einem UDP-Ausgang denselben langen
+ * Satz, CmdOnMethod="GET" eingeschlossen - obwohl dort nichts ueber HTTP
+ * geht. Damit gilt EINE Bauform fuer beide Adressarten, und die getrennte
+ * HTTP-Fassung ist entfallen.
+ *
+ * Ein ANALOGER Befehl traegt dabei vier Attribute mehr, zwischen RepeatRate
+ * und HintText; der digitale hat sie nicht. Die Werte 10/10 sind die
+ * gemessenen und bilden 1:1 ab.
+ */
 function gv_xml_virtual_out($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualOut ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . gv_x($kopf['title']) . '" ';
     $o .= 'Comment="' . gv_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . gv_x($kopf['address']) . '" ';
+    $o .= 'CmdInit="" ';
     $o .= 'CloseAfterSend="true" ';
     $o .= 'CmdSep=""';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        $analog = !empty($c['analog']);
         $o .= "\t" . '<VirtualOutCmd ';
         $o .= 'Title="' . gv_x($c['title']) . '" ';
-        if (isset($c['comment']) && $c['comment'] !== '') {
-            $o .= 'Comment="' . gv_x($c['comment']) . '" ';
-        }
+        $o .= 'Comment="' . gv_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
+        $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . gv_x($c['on']) . '" ';
-        if (isset($c['off']) && $c['off'] !== '') {
-            $o .= 'CmdOff="' . gv_x($c['off']) . '" ';
+        $o .= 'CmdOnHTTP="" ';
+        $o .= 'CmdOnPost="" ';
+        $o .= 'CmdOff="' . gv_x(isset($c['off']) ? $c['off'] : '') . '" ';
+        $o .= 'CmdOffHTTP="" ';
+        $o .= 'CmdOffPost="" ';
+        $o .= 'CmdAnswer="" ';
+        $o .= 'Analog="' . ($analog ? 'true' : 'false') . '" ';
+        $o .= 'Repeat="0" ';
+        $o .= 'RepeatRate="0" ';
+        if ($analog) {
+            $o .= 'SourceValLow="0" ';
+            $o .= 'DestValLow="0" ';
+            $o .= 'SourceValHigh="10" ';
+            $o .= 'DestValHigh="10" ';
         }
-        $o .= 'Analog="' . (!empty($c['analog']) ? 'true' : 'false') . '"';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
     return $o;
 }
 
+/**
+ * Virtueller Eingang ueber HTTP.
+ *
+ * Gemessen an "VI_Rasenmaeher (LoxBerry-Plugin)_Test.xml" vom 12.08.2026 -
+ * dieselbe Bauform, die diese Funktion erzeugt, unveraendert aus Loxone
+ * Config. Bis 0.9.8 fehlten daraus: HintText am Wurzelelement, das
+ * Info-Element, sowie Unit und HintText je Befehl.
+ *
+ * Zwei davon sind mehr als Kosmetik:
+ *   Unit    ohne das Attribut steht am virtuellen Eingang eine nackte Zahl,
+ *           und die Einheit findet nur, wer den Kommentar aufklappt.
+ *   Signed  stand auf "false". ALTER und FEHL liefern seit 0.9.9 eine -1 fuer
+ *           "nicht gemessen" - ohne Vorzeichen kaeme die nicht an.
+ */
 function gv_xml_virtual_in_http($kopf, $cmds)
 {
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="" ';
     $o .= 'Title="' . gv_x($kopf['title']) . '" ';
     $o .= 'Comment="' . gv_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . gv_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . gv_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        $einheit = isset($c['einheit']) && $c['einheit'] !== ''
+            ? '<v.0> ' . $c['einheit'] : '<v.0>';
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . gv_x($c['title']) . '" ';
         $o .= 'Comment="' . gv_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'Check="' . gv_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="false" ';
+        $o .= 'Signed="true" ';
         $o .= 'Analog="true" ';
         $o .= 'SourceValLow="0" ';
         $o .= 'DestValLow="0" ';
-        $o .= 'SourceValHigh="1" ';
-        $o .= 'DestValHigh="1" ';
+        $o .= 'SourceValHigh="100" ';
+        $o .= 'DestValHigh="100" ';
         $o .= 'DefVal="0" ';
         $o .= 'MinVal="' . gv_x(isset($c['min']) ? $c['min'] : '0') . '" ';
-        $o .= 'MaxVal="' . gv_x(isset($c['max']) ? $c['max'] : '100') . '"';
+        $o .= 'MaxVal="' . gv_x(isset($c['max']) ? $c['max'] : '100') . '" ';
+        $o .= 'Unit="' . gv_x($einheit) . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1588,17 +2377,28 @@ function gv_xml_virtual_in_http($kopf, $cmds)
  * MinVal/MaxVal werden realistisch gesetzt, nicht pauschal auf +/-2147483647:
  * Loxone zieht daraus die Reglergrenzen und die Plausibilitaetspruefung.
  */
-function gv_status_felder()
+/**
+ * $g ist das Geraet, wenn es eines gibt. Dann werden die Kelvin-Grenzen aus
+ * seiner Einstellung genommen statt pauschal 0 bis 10000: Loxone zieht daraus
+ * die Reglergrenzen, und 0 K gibt es nicht.
+ */
+function gv_status_felder($g = null)
 {
+    $kmin = ($g !== null && isset($g['kmin'])) ? (int) $g['kmin'] : 0;
+    $kmax = ($g !== null && isset($g['kmax'])) ? (int) $g['kmax'] : 10000;
     return array(
         'AN'     => array('',  0, 1,     'GV_FELD.AN'),
         'HELL'   => array('%', 0, 100,   'GV_FELD.HELL'),
-        'KELVIN' => array('K', 0, 10000, 'GV_FELD.KELVIN'),
+        'KELVIN' => array('K', $kmin, $kmax, 'GV_FELD.KELVIN'),
         'R'      => array('',  0, 255,   'GV_FELD.R'),
         'G'      => array('',  0, 255,   'GV_FELD.G'),
         'B'      => array('',  0, 255,   'GV_FELD.B'),
         'OK'     => array('',  0, 1,     'GV_FELD.OK'),
-        'ALTER'  => array('s', 0, 86400, 'GV_FELD.ALTER'),
+        /* -1 heisst "noch nie gemessen" - deshalb steht die Untergrenze auf
+         * -1 und nicht auf 0. Neue Messgroessen werden hinten angehaengt,
+         * damit bestehende Importe ihre Reihenfolge behalten. */
+        'ALTER'  => array('s', -1, 86400, 'GV_FELD.ALTER'),
+        'FEHL'   => array('', -1, 9999,  'GV_FELD.FEHL'),
     );
 }
 
@@ -1692,9 +2492,13 @@ function gv_vorlage_szenen($nummer = 1)
         return array('', '');
     }
     $cmds = array();
-    foreach (gv_szenen() as $schluessel => $szene) {
+    foreach (gv_szenen_alle() as $schluessel => $szene) {
         $cmds[] = array(
-            'title'   => $g['name'] . ' - ' . gv_klartext($szene['name']) . ' (' . $szene['sku'] . ')',
+            'title'   => $g['name'] . ' - '
+                       . (!empty($szene['eigen'])
+                          ? trim(strip_tags(html_entity_decode($szene['name'], ENT_QUOTES, 'UTF-8')))
+                          : gv_klartext($szene['name']))
+                       . ' (' . $szene['sku'] . ')',
             'comment' => sprintf(gv_klartext('GV_XML.SZENE_K'), $szene['sku'], count($szene['cmd'])),
             'on'      => gv_pt_nachricht($szene['cmd']),
             'analog'  => false,
@@ -1714,12 +2518,130 @@ function gv_vorlage_szenen($nummer = 1)
             );
         }
     }
+    /* Segmentbefehle. Bis 0.9.8 waren Segmente nur ueber die Oberflaeche und
+     * den Endpunkt erreichbar, obwohl der Hinweistext im Reiter sie neben
+     * Szenen und Balken nennt. Feste Muster, weil ein virtueller Ausgang
+     * keine Zeichenkette traegt: die freie Form bleibt dem Endpunkt. */
+    if ($g['pixel'] > 0) {
+        $muster = array(
+            array('GV_XML.SEG_ALLE_ROT',   array(array('ids' => range(0, $g['pixel'] - 1), 'rgb' => array(255, 0, 0)))),
+            array('GV_XML.SEG_ALLE_GRUEN', array(array('ids' => range(0, $g['pixel'] - 1), 'rgb' => array(0, 255, 0)))),
+            array('GV_XML.SEG_ALLE_AUS',   array()),
+        );
+        if ($g['pixel'] >= 2) {
+            $halb = (int) floor($g['pixel'] / 2);
+            $muster[] = array('GV_XML.SEG_HAELFTEN', array(
+                array('ids' => range(0, $halb - 1), 'rgb' => array(255, 0, 0)),
+                array('ids' => range($halb, $g['pixel'] - 1), 'rgb' => array(0, 0, 255)),
+            ));
+        }
+        foreach ($muster as $m) {
+            $bef = gv_pt_graffiti(0x09, 0x00, 0x00, array(0, 0, 0), $m[1]);
+            if ($bef === null) {
+                continue;
+            }
+            $cmds[] = array(
+                'title'   => $g['name'] . ' - ' . gv_klartext($m[0]),
+                'comment' => sprintf(gv_klartext('GV_XML.SEG_K'), $g['pixel']),
+                'on'      => gv_pt_nachricht($bef),
+                'analog'  => false,
+            );
+        }
+    }
+
     return array(
         'VQ_GOVEE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $g['name']) . '_Szenen.xml',
         gv_xml_virtual_out(array(
             'title'   => 'GOVEE ' . $g['name'] . ' ' . gv_klartext('GV_XML.SZENEN'),
             'comment' => sprintf(gv_klartext('GV_XML.KOPF_SZENEN'), $g['ip']),
             'address' => '/dev/udp/' . $g['ip'] . '/' . GV_PORT_BEFEHL,
+        ), $cmds),
+    );
+}
+
+/**
+ * Virtueller Ausgang ueber den LoxBerry.
+ *
+ * Der Unterschied zu gv_vorlage_ausgang() ist nicht der Umweg, sondern der
+ * Wertplatzhalter: ein <v.0> traegt EINEN Analogwert, und der Endpunkt kann
+ * daraus etwas machen, was die Leuchte unmittelbar nicht annimmt.
+ *
+ *   Balken     stufenlos statt in elf festen Stufen - die Szenenvorlage
+ *              braucht dafuer bisher elf einzelne Befehle
+ *   Farbe      als eine Zahl r*65536 + g*256 + b; drei Farbkanaele passen
+ *              durch einen einzigen Platzhalter sonst nicht durch
+ *   Szene      nach Kennung 0..255, ohne Katalogeintrag
+ *   Helligkeit 0 schaltet hier wirklich aus
+ *
+ * Der Preis: es geht nur, solange der LoxBerry laeuft und der Dienst steht.
+ * Deshalb ERSETZT diese Vorlage die beiden anderen nicht, sie kommt dazu.
+ */
+function gv_vorlage_lox($nummer = 1)
+{
+    $g = gv_geraet($nummer);
+    if ($g === null) {
+        return array('', '');
+    }
+    $p = gv_paths();
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $pfad = '/plugins/' . $p['plugin'] . '/index.php?token=' . gv_token()
+          . '&aktion=%s&geraet=' . (int) $nummer;
+    $name = $g['name'];
+    $cmds = array();
+
+    $cmds[] = array(
+        'title'  => $name . ' - ' . gv_klartext('GV_XML.EINAUS'),
+        'on'     => sprintf($pfad, 'ein'),
+        'off'    => sprintf($pfad, 'aus'),
+        'analog' => false,
+    );
+    $cmds[] = array(
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.HELL'),
+        'comment' => gv_klartext('GV_XML.LOX_HELL_K'),
+        'on'      => sprintf($pfad, 'hell') . '&wert=<v.0>',
+        'analog'  => true,
+    );
+    $cmds[] = array(
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.KELVIN'),
+        'comment' => sprintf(gv_klartext('GV_XML.KELVIN_K'), $g['kmin'], $g['kmax']),
+        'on'      => sprintf($pfad, 'kelvin') . '&wert=<v.0>',
+        'analog'  => true,
+    );
+    $cmds[] = array(
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_FARBE'),
+        'comment' => gv_klartext('GV_XML.LOX_FARBE_K'),
+        'on'      => sprintf($pfad, 'farbe') . '&wert=<v.0>',
+        'analog'  => true,
+    );
+    $cmds[] = array(
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_SZENENR'),
+        'comment' => gv_klartext('GV_XML.LOX_SZENENR_K'),
+        'on'      => sprintf($pfad, 'szene') . '&nr=<v.0>',
+        'analog'  => true,
+    );
+    if ($g['pixel'] > 0) {
+        $cmds[] = array(
+            'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_BALKEN'),
+            'comment' => sprintf(gv_klartext('GV_XML.LOX_BALKEN_K'), $g['pixel']),
+            'on'      => sprintf($pfad, 'balken') . '&wert=<v.0>',
+            'analog'  => true,
+        );
+    }
+    $cmds[] = array(
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_ABRUF'),
+        'comment' => gv_klartext('GV_XML.LOX_ABRUF_K'),
+        'on'      => sprintf($pfad, 'abruf'),
+        'analog'  => false,
+    );
+
+    return array(
+        'VQ_GOVEE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $name) . '_ueber_LoxBerry.xml',
+        gv_xml_virtual_out(array(
+            'title'   => 'GOVEE ' . $name . ' ' . gv_klartext('GV_XML.LOX_UEBER'),
+            'comment' => gv_klartext('GV_XML.KOPF_LOX'),
+            'address' => 'http://' . $host,
         ), $cmds),
     );
 }
@@ -1740,11 +2662,27 @@ function gv_vorlage_eingang($nummer = 1)
         ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
         : (gethostname() ?: 'loxberry');
     $cmds = array();
-    foreach (gv_status_felder() as $feld => $info) {
+    foreach (gv_status_felder($g) as $feld => $info) {
         $cmds[] = array(
             'title'   => 'GOVEE_' . (int) $nummer . '_' . $feld,
-            'comment' => gv_klartext($info[3]) . ($info[0] !== '' ? ' [' . $info[0] . ']' : ''),
-            'check'   => '\i' . $feld . '=\i\v',
+            /* Die Einheit steht im ATTRIBUT, nicht im Kommentar.
+             *
+             * Gemessen am 20.08.2026 an einer Projektdatei, in die diese
+             * Vorlage eingelesen wurde: Loxone Config legt sie als
+             * KINDELEMENT ab, nicht als Attribut des Befehls -
+             *   <Display Type="2" Unit="&lt;v.0&gt; K" StateOnly="true"/>
+             * Wer im Projekt nach einem Unit an <C Type="VirtualHttpInCmd">
+             * sucht, findet keines und schliesst daraus das Falsche. Genau
+             * das ist mir passiert; der Kommentar stand danach kurzzeitig
+             * doppelt mit der Einheit da. */
+            'comment' => gv_klartext($info[3]),
+            'einheit' => $info[0],
+            /* Das Trennzeichen gehoert in den Suchtext. Loxone sucht woertlich
+             * und nimmt den ERSTEN Treffer; ohne das Semikolon findet "R="
+             * auch das R in "ALTER=". Heute geht das gut, weil R vor ALTER
+             * steht - das ist eine Wette auf die Reihenfolge der Zeile und
+             * keine Eigenschaft. */
+            'check'   => '\i;' . $feld . '=\i\v',
             'min'     => $info[1],
             'max'     => $info[2],
         );
@@ -1758,6 +2696,53 @@ function gv_vorlage_eingang($nummer = 1)
             'address' => $adresse,
             'polling' => '60',
             'comment' => sprintf(gv_klartext('GV_XML.KOPF_EINGANG'), date('d.m.Y')),
+        ), $cmds),
+    );
+}
+
+/**
+ * Ein virtueller Eingang fuer ALLE Leuchten.
+ *
+ * Bis 0.9.8 holte Loxone je Geraet einen eigenen Eingang; bei acht Leuchten
+ * sind das acht Abrufe je Takt, die alle dieselbe Datei lesen. Diese Vorlage
+ * fragt einmal und verteilt die Werte.
+ *
+ * Sie ist eine ALTERNATIVE zu den Einzeldateien, kein Zusatz: die Titel sind
+ * dieselben, und zweimal eingelesen sind zwei Bausteine. Das steht auch im
+ * Kommentar der Datei, wo es beim Import mitwandert.
+ */
+function gv_vorlage_eingang_alle()
+{
+    $geraete = gv_geraete();
+    if (!$geraete) {
+        return array('', '');
+    }
+    $p = gv_paths();
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
+        : (gethostname() ?: 'loxberry');
+    $cmds = array();
+    foreach ($geraete as $nr => $g) {
+        foreach (gv_status_felder($g) as $feld => $info) {
+            $cmds[] = array(
+                'title'   => 'GOVEE_' . (int) $nr . '_' . $feld,
+                'comment' => $g['name'] . ': ' . gv_klartext($info[3]),
+                'einheit' => $info[0],
+                'check'   => '\i;G' . (int) $nr . '_' . $feld . '=\i\v',
+                'min'     => $info[1],
+                'max'     => $info[2],
+            );
+        }
+    }
+    $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
+             . '/index.php?token=' . gv_token() . '&aktion=status&geraet=alle';
+    return array(
+        'VI_GOVEE_alle.xml',
+        gv_xml_virtual_in_http(array(
+            'title'   => 'GOVEE ' . gv_klartext('GV_XML.ZUSTAND_ALLE'),
+            'address' => $adresse,
+            'polling' => '60',
+            'comment' => sprintf(gv_klartext('GV_XML.KOPF_ALLE'), count($geraete), date('d.m.Y')),
         ), $cmds),
     );
 }

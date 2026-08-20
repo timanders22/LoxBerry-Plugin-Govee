@@ -20,8 +20,15 @@ if [ -f "$PID" ]; then
     rm -f "$PID"
 fi
 
-# Die Sicherung neben dem Ordner - der Installer raeumt sie nicht weg.
+# ALLE Sicherungen neben dem Ordner - der Installer raeumt sie nicht weg.
+# Bis 0.9.8 stand hier nur die erste Zeile. Zurueck blieben damit
+# <ordner>.backup.govee.json mit dem Aktionstoken und - schwerer -
+# <ordner>.backup.geheim.json mit dem gueltigen Govee-API-Schluessel. Der
+# Kommentar oben nennt den WifiScanner-Fall; das hier war derselbe.
+# Der zweite Name stammt aus 0.9.8 und wird nur noch weggeraeumt.
 rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
+rm -f "$BASE/config/plugins/$PFOLDER.backup.govee.json"
+rm -f "$BASE/config/plugins/$PFOLDER.backup.geheim.json"
 # Die Datei mit dem Cloud-Schluessel liegt im Ordner und geht mit ihm; zur
 # Sicherheit trotzdem ausdruecklich loeschen, falls der Ordner stehen bleibt.
 rm -f "$BASE/config/plugins/$PFOLDER/geheim.json"

@@ -43,7 +43,9 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require_once __DIR__ . '/gv_lib.php';
 header('Content-Type: text/plain; charset=utf-8');
 
-$gv_cfg = gv_config();
+/* gv_config(false) liest nur. Der unangemeldete Endpunkt darf nichts
+ * anlegen und nichts zurueckschreiben - auch keine Selbstheilung. */
+$gv_cfg = gv_config(false);
 
 /* ---------------- Token ---------------- */
 $gv_soll = (string) $gv_cfg['aktionstoken'];
@@ -92,8 +94,12 @@ function gv_param($name, $muster, $vorgabe = '')
     return $w;
 }
 
-$gv_nr       = gv_param('geraet',   '/^[0-9]{1,2}$/', '1');
-$gv_wert     = gv_param('wert',     '/^[0-9]{1,5}$/', '');
+/* "alle" ist zugelassen: beim Lesen ergibt es den Sammelstatus, beim
+ * Schalten geht der Befehl an jede eingerichtete Leuchte. */
+$gv_nr       = gv_param('geraet',   '/^([0-9]{1,2}|alle)$/', '1');
+/* Acht Ziffern, nicht fuenf: eine Farbe als eine Zahl geht bis 16777215.
+ * Die Bereiche prueft danach jede Aktion fuer sich. */
+$gv_wert     = gv_param('wert',     '/^[0-9]{1,8}$/', '');
 $gv_hex      = gv_param('hex',      '/^[0-9a-fA-F]{6}$/', '');
 $gv_hg       = gv_param('hg',       '/^[0-9a-fA-F]{6}$/', '');
 $gv_hgint    = gv_param('hgint',    '/^[0-9]{1,3}$/', '');
@@ -103,6 +109,7 @@ $gv_art      = gv_param('art',      '/^[0-9]{1,3}$/', '');
 $gv_sens     = gv_param('sens',     '/^[0-9]{1,3}$/', '');
 $gv_gruppe   = gv_param('gruppe',   '/^(1|12|15|19)$/', '15');
 $gv_name     = gv_param('name',     '/^[A-Za-z0-9_]{1,40}$/', '');
+$gv_szenennr = gv_param('nr',       '/^[0-9]{1,3}$/', '');
 $gv_verf     = gv_param('verfahren', '/^(graffiti|maske)$/', 'graffiti');
 $gv_segmente = gv_param('segmente', '/^[0-9a-fA-F:,\-]{1,300}$/', '');
 $gv_ptcmd    = gv_param('cmd',      '#^[A-Za-z0-9+/=,]{1,2000}$#', '');
@@ -119,7 +126,7 @@ function gv_w($v)
 $gv_lox = gv_loxone();
 $gv_alle = gv_werte();
 $gv_alter = gv_alter();
-$gv_g = isset($gv_alle[$gv_nr]) ? $gv_alle[$gv_nr] : null;
+$gv_g = ($gv_nr !== 'alle' && isset($gv_alle[$gv_nr])) ? $gv_alle[$gv_nr] : null;
 
 /* ================= Lesende Aktionen ================= */
 
@@ -130,10 +137,11 @@ if ($gv_aktion === 'roh') {
 }
 
 if ($gv_aktion === 'szenen') {
-    $gv_k = gv_szenen();
+    $gv_k = gv_szenen_alle($gv_cfg);
     echo 'SZENEN;OK=1;N=' . count($gv_k) . "\n";
     foreach ($gv_k as $gv_s => $gv_z) {
-        echo $gv_s . ';SKU=' . $gv_z['sku'] . ';PAKETE=' . count($gv_z['cmd']) . "\n";
+        echo $gv_s . ';SKU=' . $gv_z['sku'] . ';PAKETE=' . count($gv_z['cmd'])
+           . ';EIGEN=' . (empty($gv_z['eigen']) ? 0 : 1) . "\n";
     }
     exit;
 }
@@ -149,15 +157,46 @@ if ($gv_aktion === 'liste') {
     exit;
 }
 
+if ($gv_aktion === 'status' && $gv_nr === 'alle') {
+    /* Ein Abruf fuer alle Leuchten. Die Feldnamen tragen die Geraetenummer
+     * vorne, und jede Angabe steht hinter einem Semikolon - der Suchtext in
+     * Loxone lautet also \i;G1_AN=\i\v und kann nichts anderes treffen. */
+    printf("GOVEE;OK=%d;N=%d;ALTER=%d\n",
+        (int) (!empty($gv_lox['ok'])), count($gv_alle), $gv_alter);
+    foreach ($gv_alle as $gv_i => $gv_z) {
+        $gv_zeile = '';
+        foreach (array('AN' => 'an', 'HELL' => 'hell', 'KELVIN' => 'kelvin',
+                       'R' => 'r', 'G' => 'g', 'B' => 'b') as $gv_f => $gv_k) {
+            $gv_zeile .= ';G' . (int) $gv_i . '_' . $gv_f . '=' . gv_w($gv_z[$gv_k]);
+        }
+        $gv_zeile .= ';G' . (int) $gv_i . '_HEX=' . ($gv_z['hex'] === null ? '-' : $gv_z['hex']);
+        $gv_zeile .= ';G' . (int) $gv_i . '_OK=' . (int) $gv_z['ok'];
+        $gv_zeile .= ';G' . (int) $gv_i . '_ALTER=' . (int) $gv_z['alter'];
+        $gv_zeile .= ';G' . (int) $gv_i . '_FEHL=' . (int) $gv_z['fehl'];
+        echo $gv_zeile . "\n";
+    }
+    exit;
+}
+
 if ($gv_aktion === 'status') {
     if ($gv_g === null) {
-        printf("GOVEE;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=%d\n", count($gv_alle), $gv_alter);
+        /* ALTER meinte hier bisher das Alter des GANZEN Abbilds, eine Zeile
+         * weiter unten aber das Alter dieses einen Werts - dasselbe Suchmuster,
+         * zwei Bedeutungen. Wer eine Geraetenummer eintraegt, die es nicht mehr
+         * gibt (die Nummern rutschen beim Loeschen einer Zeile), fuetterte
+         * damit den Ausfallvergleich in Loxone mit einer fremden Groesse.
+         * -1 heisst "nicht gemessen", und das ist hier die Wahrheit. */
+        printf("GOVEE;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=-1;FEHL=-1\n", count($gv_alle));
         exit;
     }
-    printf("GOVEE;OK=%d;AN=%s;HELL=%s;KELVIN=%s;R=%s;G=%s;B=%s;HEX=%s;ALTER=%d\n",
+    /* FEHL steht HINTEN. Eine zusaetzliche Angabe am Ende laesst jedes
+     * bestehende Suchmuster in Loxone unveraendert gueltig - das ist der
+     * billigste Ort fuer eine Erweiterung. */
+    printf("GOVEE;OK=%d;AN=%s;HELL=%s;KELVIN=%s;R=%s;G=%s;B=%s;HEX=%s;ALTER=%d;FEHL=%d\n",
         (int) $gv_g['ok'], gv_w($gv_g['an']), gv_w($gv_g['hell']), gv_w($gv_g['kelvin']),
         gv_w($gv_g['r']), gv_w($gv_g['g']), gv_w($gv_g['b']),
-        ($gv_g['hex'] === null ? '-' : $gv_g['hex']), (int) $gv_g['alter']);
+        ($gv_g['hex'] === null ? '-' : $gv_g['hex']), (int) $gv_g['alter'],
+        (int) $gv_g['fehl']);
     exit;
 }
 
@@ -169,15 +208,8 @@ if (!in_array($gv_aktion, array('abruf', 'suche'), true) && empty($gv_cfg['steue
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
     exit;
 }
-if (gv_dienst_pid() === 0) {
-    /* Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts. */
-    http_response_code(503);
-    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
-    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
-    exit;
-}
-
-$gv_befehl = array('aktion' => $gv_aktion, 'geraet' => (int) $gv_nr);
+$gv_befehl = array('aktion' => $gv_aktion,
+                   'geraet' => ($gv_nr === 'alle') ? 'alle' : (int) $gv_nr);
 
 if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
     if ($gv_wert === '') {
@@ -190,23 +222,40 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
         $gv_befehl['hex'] = $gv_hex;
     }
 } elseif ($gv_aktion === 'farbe') {
-    if ($gv_hex === '') {
+    if ($gv_hex === '' && $gv_wert === '') {
         http_response_code(400);
-        echo "SET;OK=0;GRUND=HEX_FEHLT\n";
-        echo "Die Farbe wird als hex=RRGGBB angegeben, zum Beispiel hex=ff8800.\n";
+        echo "SET;OK=0;GRUND=FARBWERT_FEHLT\n";
+        echo "Die Farbe wird als hex=RRGGBB angegeben (zum Beispiel hex=ff8800)\n";
+        echo "oder als eine Zahl wert=0..16777215, gerechnet r*65536 + g*256 + b.\n";
+        echo "Die Zahl ist der Weg fuer einen virtuellen Ausgang: <v.0> traegt nur EINEN Wert.\n";
         exit;
     }
-    $gv_befehl['r'] = hexdec(substr($gv_hex, 0, 2));
-    $gv_befehl['g'] = hexdec(substr($gv_hex, 2, 2));
-    $gv_befehl['b'] = hexdec(substr($gv_hex, 4, 2));
+    if ($gv_hex !== '') {
+        $gv_befehl['r'] = hexdec(substr($gv_hex, 0, 2));
+        $gv_befehl['g'] = hexdec(substr($gv_hex, 2, 2));
+        $gv_befehl['b'] = hexdec(substr($gv_hex, 4, 2));
+    } else {
+        if ((int) $gv_wert > 16777215) {
+            http_response_code(400);
+            echo "SET;OK=0;GRUND=FARBWERT_ZU_GROSS\n";
+            echo "Eine Farbe als Zahl liegt zwischen 0 und 16777215.\n";
+            exit;
+        }
+        $gv_befehl['wert'] = (int) $gv_wert;
+    }
 } elseif ($gv_aktion === 'szene') {
-    if ($gv_name === '') {
+    if ($gv_name === '' && $gv_szenennr === '') {
         http_response_code(400);
         echo "SET;OK=0;GRUND=NAME_FEHLT\n";
-        echo "Die Schluessel stehen unter aktion=szenen.\n";
+        echo "Entweder name=<Schluessel> (die Schluessel stehen unter aktion=szenen)\n";
+        echo "oder nr=<0..255> fuer eine Szenenkennung ohne Katalogeintrag.\n";
         exit;
     }
-    $gv_befehl['name'] = $gv_name;
+    if ($gv_szenennr !== '') {
+        $gv_befehl['nr'] = (int) $gv_szenennr;
+    } else {
+        $gv_befehl['name'] = $gv_name;
+    }
 } elseif ($gv_aktion === 'segment') {
     if ($gv_segmente === '') {
         http_response_code(400);
@@ -238,12 +287,33 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
     $gv_befehl['gruppe'] = (int) $gv_gruppe;
     $gv_befehl['sens'] = ($gv_sens === '') ? 100 : (int) $gv_sens;
 } elseif ($gv_aktion === 'pt') {
+    /* Dieselbe Sperre wie steuerung_ein wird auch hier am Tor geprueft.
+     * Bis 0.9.8 wanderte der Befehl durch die Warteschlange ins Dateisystem,
+     * nur damit der Dienst ihn ablehnt - zwei Orte fuer eine Sperre. */
+    if (empty($gv_cfg['pt_frei'])) {
+        http_response_code(403);
+        echo "SET;OK=0;GRUND=PT_GESPERRT\n";
+        echo "Rohe ptReal-Befehle sind gesperrt. Reiter Einstellungen, Haken 'Rohe ptReal-Befehle zulassen'.\n";
+        exit;
+    }
     if ($gv_ptcmd === '') {
         http_response_code(400);
         echo "SET;OK=0;GRUND=CMD_FEHLT\n";
         exit;
     }
     $gv_befehl['cmd'] = explode(',', $gv_ptcmd);
+}
+
+/* Erst jetzt die Frage nach dem Dienst. Sie steht ABSICHTLICH hinter der
+ * Pruefung der Parameter: wer einen gesperrten oder falsch geschriebenen
+ * Befehl schickt, soll das erfahren und nicht "Der Dienst laeuft nicht" -
+ * sonst sucht er an der falschen Stelle. */
+if (gv_dienst_pid() === 0) {
+    /* Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts. */
+    http_response_code(503);
+    echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
+    echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
+    exit;
 }
 
 list($gv_erg, $gv_meldung) = gv_befehl_absetzen($gv_befehl);

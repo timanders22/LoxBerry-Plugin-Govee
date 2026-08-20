@@ -109,10 +109,11 @@ echo "<INFO>  3. Dienst starten."
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-govee}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
-netz_zurueck() {
-    datei=$1; soll=$2
-    ziel="$NETZ_CFG/$datei"
-    zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.$datei"
+netz_zurueck_json() {
+    soll=$1
+    ziel="$NETZ_CFG/govee.json"
+    zweit="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json"
+    datei="govee.json"
     [ -f "$zweit" ] || return 0
     verloren=0
     if [ ! -f "$ziel" ] || [ ! -s "$ziel" ]; then
@@ -130,7 +131,20 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "govee.json" "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+# Der alte Name aus 0.9.8 wird uebernommen, falls er auf dieser Anlage noch
+# liegt - eine alte Zweitschrift soll nicht verwaisen, und zwei Namen fuer
+# dieselbe Sache soll es hinterher nicht mehr geben.
+ALT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json"
+NEU="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.json"
+if [ -s "$ALT" ]; then
+    if [ ! -s "$NEU" ]; then
+        cp -p "$ALT" "$NEU" && chmod 0600 "$NEU" 2>/dev/null \
+            && echo "<OK> Zweitschrift aus 0.9.8 uebernommen."
+    fi
+    rm -f "$ALT"
+fi
+
+netz_zurueck_json "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
 
 
 # Zurueckspielen fuer Dateien OHNE mitgelieferte Vorgabe: es gibt nichts,

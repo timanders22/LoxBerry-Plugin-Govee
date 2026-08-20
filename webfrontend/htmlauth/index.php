@@ -51,9 +51,11 @@ $gv_reiter = array(
     'test'     => 'REITER.TEST',
     'log'      => 'REITER.LOG',
 );
-$gv_muster = '/^tab-(' . implode('|', array_map(function ($k) {
-    return preg_quote($k, '/');
-}, array_keys($gv_reiter))) . ')$/';
+/* Ausgeschrieben, nicht erzeugt: ein Ausdruck, den ein Prueflauf von aussen
+ * lesen kann. Dass er zum Feld darueber und zu den Bereichen weiter unten
+ * passt, misst der Reiter Test nach - erzeugter Code waere sauberer und
+ * unpruefbar. */
+$gv_muster = '/^tab-(settings|mqtt|loxone|test|log)$/';
 $gv_tab = 'tab-settings';
 if (isset($_POST['activetab']) && preg_match($gv_muster, (string) $_POST['activetab'])) {
     $gv_tab = (string) $_POST['activetab'];
@@ -65,6 +67,22 @@ $gv_meldungen = array();
 $gv_fehler = array();      // gesammelt, nicht ueberschrieben
 $gv_testausgabe = '';
 $gv_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+
+/* ---------------- Formularschutz ----------------
+ * EINE Pruefung, und sie steht vor allen Handlern - einen Handler kann man
+ * vergessen, diese Stelle nicht. Faellt sie durch, wird der POST
+ * zurueckgenommen UND gemeldet: ein Formular, das wortlos nichts tut,
+ * schickt den Anwender auf die Suche nach einem Fehler, den es nicht gibt.
+ *
+ * Fail closed: ohne hinterlegtes Token gibt es nichts zu vergleichen. */
+$gv_fmt = gv_formtoken();
+if ($gv_post) {
+    $gv_mit = isset($_POST['fmt']) ? (string) $_POST['fmt'] : '';
+    if ($gv_fmt === '' || !hash_equals($gv_fmt, $gv_mit)) {
+        $gv_post = false;
+        $gv_fehler[] = gv_t('ALLG.FORMULAR_FREMD');
+    }
+}
 
 /* ---------------- Vorlage herunterladen ---------------- */
 if ($gv_post && isset($_POST['vorlage'])) {
@@ -79,6 +97,10 @@ if ($gv_post && isset($_POST['vorlage'])) {
         list($gv_name, $gv_inhalt) = gv_vorlage_szenen($gv_nr);
     } elseif ($gv_art === 'eingang') {
         list($gv_name, $gv_inhalt) = gv_vorlage_eingang($gv_nr);
+    } elseif ($gv_art === 'lox') {
+        list($gv_name, $gv_inhalt) = gv_vorlage_lox($gv_nr);
+    } elseif ($gv_art === 'eingang_alle') {
+        list($gv_name, $gv_inhalt) = gv_vorlage_eingang_alle();
     }
     if ($gv_inhalt === '') {
         $gv_fehler[] = gv_t('LOX.FEHLER_VORLAGE');
@@ -93,6 +115,25 @@ if ($gv_post && isset($_POST['vorlage'])) {
     }
 }
 
+/* ---------------- Sicherung herunterladen ---------------- */
+if ($gv_post && isset($_POST['sicherung_holen'])) {
+    /* Ausgegeben wird die Konfiguration, NICHT die Datei mit dem
+     * Cloud-Schluessel. Der liegt in geheim.json mit den Rechten 0600 und
+     * wird nirgends ausgegeben - eine Sicherung, die ihn mitnimmt, legte ihn
+     * in den Download-Ordner des Browsers. */
+    $gv_sich = gv_config();
+    $gv_js = json_encode($gv_sich, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($gv_js === false) {
+        $gv_fehler[] = gv_t('EINST.FEHLER_SICHERUNG');
+        $gv_tab = 'tab-settings';
+    } else {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="govee-' . date('Ymd-Hi') . '.json"');
+        echo $gv_js;
+        exit;
+    }
+}
+
 /* ---------------- Einstellungen speichern ---------------- */
 if ($gv_post && isset($_POST['speichern'])) {
     $gv_cfg = gv_config();
@@ -100,6 +141,21 @@ if ($gv_post && isset($_POST['speichern'])) {
     /* Geraetetabelle: bis zu acht Zeilen. Nur Zeilen mit den noetigen Angaben
      * werden uebernommen; unvollstaendige werden gemeldet, nicht verschluckt. */
     $gv_neu = array();
+    $gv_namen_belegt = array();
+    /* Zwei verschiedene Mengen, und sie duerfen nicht vermengt werden:
+     *   $gv_nr_vergeben  was in DIESEM Speichervorgang schon vergeben ist -
+     *                    daran wird eine Kollision erkannt
+     *   $gv_nr_bestand   was es schon gibt - daraus wird weiter unten die
+     *                    naechste freie Nummer gebildet
+     * Mit nur einer Menge spraeche der Speichervorgang jeder Zeile ihre
+     * eigene, gerade mitgeschickte Nummer ab. */
+    $gv_nr_vergeben = array();
+    $gv_nr_bestand = array();
+    foreach ((array) (isset($gv_cfg['geraete']) ? $gv_cfg['geraete'] : array()) as $gv_alt) {
+        if (is_array($gv_alt) && isset($gv_alt['nr']) && (int) $gv_alt['nr'] > 0) {
+            $gv_nr_bestand[(int) $gv_alt['nr']] = true;
+        }
+    }
     for ($gv_i = 0; $gv_i < 8; $gv_i++) {
         $gv_hol = function ($feld) use ($gv_i) {
             $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
@@ -138,12 +194,43 @@ if ($gv_post && isset($_POST['speichern'])) {
                 continue;
             }
         }
+        /* Doppelte Namen ergeben denselben Dateinamen UND denselben
+         * Bausteintitel in Loxone Config - abgewiesen, nicht zurechtgebogen. */
+        /* strtolower, nicht mb_strtolower: mbstring ist auf einem LoxBerry
+         * nicht garantiert geladen, und der Hausstandard meidet mb_* aus
+         * genau diesem Grund. Der Vergleich faltet damit nur ASCII - zwei
+         * Namen, die sich allein in der Grosschreibung eines Umlauts
+         * unterscheiden, gelten als verschieden. Das kostet hoechstens
+         * eine ausbleibende Beanstandung, nie eine falsche Wirkung. */
+        $gv_klein = strtolower($gv_nm);
+        if ($gv_nm !== '' && isset($gv_namen_belegt[$gv_klein])) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_NAME_DOPPELT'), $gv_i + 1, $gv_nm);
+            continue;
+        }
+        if ($gv_nm !== '') {
+            $gv_namen_belegt[$gv_klein] = true;
+        }
+        /* Die Nummer kommt aus dem versteckten Feld der Zeile und wird
+         * mitgeschleppt. Nur eine Zeile ohne Nummer bekommt eine neue. */
+        $gv_znr = $gv_hol('g_nr');
+        if (preg_match('/^[0-9]{1,3}$/', $gv_znr) && (int) $gv_znr > 0
+            && !isset($gv_nr_vergeben[(int) $gv_znr])) {
+            $gv_znr = (int) $gv_znr;
+            $gv_nr_vergeben[$gv_znr] = true;
+        } else {
+            $gv_znr = 0;
+        }
         $gv_zeile = array(
             'name'   => $gv_nm,
             'art'    => $gv_art,
             'ip'     => $gv_ip,
             'sku'    => $gv_sku,
             'device' => $gv_dev,
+            /* Auswahlfeld, kein Haken: ein nicht angehakter Haken wird gar
+             * nicht mitgeschickt, und in einer Tabelle mit acht Zeilen
+             * verschoeben sich damit alle folgenden Zeilen. */
+            'pt'     => $gv_hol('g_pt') === '1' ? 1 : 0,
+            'nr'     => $gv_znr,
         );
         foreach (array('pixel' => array(0, 200), 'kmin' => array(1000, 10000),
                        'kmax' => array(1000, 10000)) as $gv_f => $gv_gr) {
@@ -165,7 +252,73 @@ if ($gv_post && isset($_POST['speichern'])) {
         }
         $gv_neu[] = $gv_zeile;
     }
+    /* Zeilen ohne Nummer bekommen jetzt eine - nach der hoechsten je
+     * vergebenen, nicht nach der Stellung. Die hoechste wird mitgeschrieben,
+     * damit eine Nummer auch nach dem Entfernen des Geraets nicht wieder
+     * vergeben wird. */
+    $gv_hoechste = 0;
+    foreach ($gv_neu as $gv_z) {
+        if ((int) $gv_z['nr'] > 0) {
+            $gv_hoechste = max($gv_hoechste, (int) $gv_z['nr']);
+        }
+    }
+    foreach (array_keys($gv_nr_bestand) as $gv_bnr) {
+        $gv_hoechste = max($gv_hoechste, (int) $gv_bnr);
+    }
+    $gv_hoechste = max($gv_hoechste, (int) (isset($gv_cfg['nr_hoechste']) ? $gv_cfg['nr_hoechste'] : 0));
+    foreach ($gv_neu as $gv_k => $gv_z) {
+        if ((int) $gv_z['nr'] < 1) {
+            $gv_hoechste++;
+            $gv_neu[$gv_k]['nr'] = $gv_hoechste;
+        }
+    }
+    $gv_cfg['nr_hoechste'] = $gv_hoechste;
     $gv_cfg['geraete'] = $gv_neu;
+
+    /* Eigene Szenen. Geprueft wird mit derselben Funktion wie bei jeder von
+     * aussen hereinkommenden Liste - 20 Byte je Paket und die richtige
+     * XOR-Pruefsumme. Was nicht besteht, wird gemeldet und NICHT gespeichert;
+     * die uebrigen Zeilen speichert derselbe Vorgang trotzdem. Eine halb
+     * ausgefuellte Zeile darf nicht das Speichern aller Felder verhindern. */
+    $gv_szenen_neu = array();
+    $gv_schluessel_belegt = array();
+    for ($gv_i = 0; $gv_i < 8; $gv_i++) {
+        $gv_hol = function ($feld) use ($gv_i) {
+            $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
+            return isset($a[$gv_i]) ? trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $a[$gv_i])) : '';
+        };
+        $gv_sname = $gv_hol('s_name');
+        $gv_ssku = $gv_hol('s_sku');
+        $gv_scmd = $gv_hol('s_cmd');
+        if ($gv_sname === '' && $gv_scmd === '') {
+            continue;   // leere Zeile
+        }
+        if ($gv_sname === '' || $gv_scmd === '') {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_UNVOLLSTAENDIG'), $gv_i + 1);
+            continue;
+        }
+        $gv_sschl = preg_replace('/[^a-z0-9_]/', '', strtolower(str_replace(
+            array(' ', '-', 'ä', 'ö', 'ü', 'ß'), array('_', '_', 'ae', 'oe', 'ue', 'ss'), $gv_sname)));
+        if ($gv_sschl === '' || strlen($gv_sschl) > 33) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_NAME'), $gv_i + 1);
+            continue;
+        }
+        if (isset($gv_schluessel_belegt[$gv_sschl])) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_DOPPELT'), $gv_i + 1, $gv_sschl);
+            continue;
+        }
+        $gv_liste = array_values(array_filter(array_map('trim',
+            preg_split('/[\s,]+/', $gv_scmd)), 'strlen'));
+        list($gv_geprueft, $gv_meldung) = gv_pt_pruefen($gv_liste);
+        if ($gv_geprueft === null) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_CMD'), $gv_i + 1, $gv_meldung);
+            continue;
+        }
+        $gv_schluessel_belegt[$gv_sschl] = true;
+        $gv_szenen_neu[] = array('schluessel' => $gv_sschl, 'name' => $gv_sname,
+                                 'sku' => $gv_ssku, 'cmd' => $gv_geprueft);
+    }
+    $gv_cfg['szenen'] = $gv_szenen_neu;
 
     foreach (array(
         'intervall'  => array(5, 3600),
@@ -277,14 +430,57 @@ if ($gv_post && isset($_POST['uebernehmen'])) {
             $gv_fehler[] = gv_t('EINST.FEHLER_ZU_VIELE');
             break;
         }
+        $gv_neue_nr = gv_naechste_nummer($gv_cfg);
         $gv_cfg['geraete'][] = array(
             'name'   => ($gv_f['sku'] !== '' ? $gv_f['sku'] : 'Govee') . ' ' . $gv_f['ip'],
             'art'    => 'lan',
             'ip'     => (string) $gv_f['ip'],
             'sku'    => (string) $gv_f['sku'],
             'device' => (string) $gv_f['device'],
+            'nr'     => $gv_neue_nr,
         );
+        $gv_cfg['nr_hoechste'] = $gv_neue_nr;
         $gv_vorhanden[$gv_f['ip']] = true;
+        $gv_dazu++;
+    }
+    if ($gv_dazu > 0 && gv_config_speichern($gv_cfg)) {
+        $gv_meldungen[] = sprintf(gv_t('EINST.UEBERNOMMEN'), $gv_dazu);
+    } elseif ($gv_dazu === 0) {
+        $gv_meldungen[] = gv_t('EINST.NICHTS_NEU');
+    }
+    $gv_tab = 'tab-settings';
+}
+
+/* ---------------- Cloud-Geraete uebernehmen ---------------- */
+if ($gv_post && isset($_POST['uebernehmen_cloud'])) {
+    $gv_cfg = gv_config();
+    list($gv_cliste, $gv_cts) = gv_cloud_liste();
+    $gv_belegt = array();
+    foreach ((array) $gv_cfg['geraete'] as $gv_z) {
+        if (is_array($gv_z) && isset($gv_z['device']) && $gv_z['device'] !== '') {
+            $gv_belegt[(string) $gv_z['device']] = true;
+        }
+    }
+    $gv_dazu = 0;
+    foreach ($gv_cliste as $gv_c) {
+        if (isset($gv_belegt[$gv_c['device']])) {
+            continue;
+        }
+        if (count($gv_cfg['geraete']) >= 8) {
+            $gv_fehler[] = gv_t('EINST.FEHLER_ZU_VIELE');
+            break;
+        }
+        $gv_nnr = gv_naechste_nummer($gv_cfg);
+        $gv_cfg['geraete'][] = array(
+            'name'   => $gv_c['name'] !== '' ? $gv_c['name'] : ($gv_c['sku'] . ' ' . $gv_c['device']),
+            'art'    => 'cloud',
+            'ip'     => '',
+            'sku'    => $gv_c['sku'],
+            'device' => $gv_c['device'],
+            'nr'     => $gv_nnr,
+        );
+        $gv_cfg['nr_hoechste'] = $gv_nnr;
+        $gv_belegt[$gv_c['device']] = true;
         $gv_dazu++;
     }
     if ($gv_dazu > 0 && gv_config_speichern($gv_cfg)) {
@@ -300,9 +496,12 @@ if ($gv_post && isset($_POST['dienst'])) {
     $gv_befehl = (string) $_POST['dienst'];
     list($gv_ok, $gv_ausgabe) = gv_dienst($gv_befehl);
     if ($gv_ok) {
-        $gv_meldungen[] = gv_t('EINST.DIENST_' . strtoupper($gv_befehl)) . ' ' . gv_e($gv_ausgabe);
+        /* Kein gv_e() hier: beide Sammelanzeigen maskieren beim Ausgeben
+         * selbst (array_map('gv_e', ...)). Ein zweites Mal maskiert ergaebe
+         * &quot; auf dem Bildschirm. */
+        $gv_meldungen[] = gv_t('EINST.DIENST_' . strtoupper($gv_befehl)) . ' ' . $gv_ausgabe;
     } else {
-        $gv_fehler[] = gv_e($gv_ausgabe);
+        $gv_fehler[] = $gv_ausgabe;
     }
     $gv_tab = 'tab-settings';
 }
@@ -319,6 +518,16 @@ if ($gv_post && isset($_POST['token_neu'])) {
     $gv_tab = 'tab-loxone';
 }
 
+/* ---------------- Stoerung quittieren ---------------- */
+if ($gv_post && isset($_POST['stoerung_quittieren'])) {
+    if (gv_stoerung_quittieren()) {
+        $gv_meldungen[] = gv_t('ALLG.STOERUNG_QUITTIERT');
+    } else {
+        $gv_fehler[] = gv_t('ALLG.STOERUNG_NICHT_QUITTIERT');
+    }
+    $gv_tab = 'tab-test';
+}
+
 /* ---------------- Log leeren ---------------- */
 if ($gv_post && isset($_POST['log_leeren'])) {
     @mkdir(dirname($gv_p['log']), 0775, true);
@@ -328,12 +537,22 @@ if ($gv_post && isset($_POST['log_leeren'])) {
 }
 
 /* ---------------- Reiter Test ---------------- */
-if ($gv_post && isset($_POST['test'])) {
+if ($gv_post && isset($_POST['test']) && (string) $_POST['test'] === 'trocken') {
+    /* Der Trockenlauf gehoert in den Ausgabeblock, nicht in die Meldungszeile:
+     * er liefert mehrere Zeilen, und die will man lesen koennen. */
+    list($gv_stand, $gv_text) = gv_trockenlauf();
+    if ($gv_stand === 1) {
+        $gv_testausgabe = $gv_text;
+    } else {
+        $gv_fehler[] = $gv_text;
+    }
+    $gv_tab = 'tab-test';
+} elseif ($gv_post && isset($_POST['test'])) {
     list($gv_stand, $gv_text) = gv_test_aktion((string) $_POST['test']);
     if ($gv_stand === 1) {
-        $gv_meldungen[] = gv_e($gv_text);
+        $gv_meldungen[] = $gv_text;
     } else {
-        $gv_fehler[] = gv_e($gv_text);
+        $gv_fehler[] = $gv_text;
     }
     $gv_tab = 'tab-test';
 }
@@ -472,7 +691,20 @@ if ($gv_rahmen) {
 </div>
 
 <?php if (!empty($gv_zustand['fehler'])) { ?>
-<div class="sm-warnung"><b><?= gv_e(gv_t('ALLG.LETZTE_STOERUNG')) ?></b> <?= gv_e($gv_zustand['fehler']) ?></div>
+<div class="sm-warnung"><b><?= gv_e(gv_t('ALLG.LETZTE_STOERUNG')) ?></b>
+<?php if (!empty($gv_zustand['fehler_ts'])) { ?>
+(<?= gv_e(date('d.m.Y H:i:s', (int) $gv_zustand['fehler_ts'])) ?>)
+<?php } ?>
+<?= gv_e($gv_zustand['fehler']) ?>
+<div class="sm-legende"><span><i class="sm-punkt sm-b-technik"></i> <?= gv_t('LEGENDE.TECHNIK') ?></span></div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="stoerung_quittieren" value="1"><?= gv_e(gv_t('ALLG.K_QUITTIEREN')) ?></button>
+  </form>
+</div>
+</div>
 <?php } ?>
 
 <?php foreach ($gv_werte as $gv_nr => $gv_w) { ?>
@@ -500,10 +732,16 @@ if ($gv_rahmen) {
      Welcher Reiter offen ist, entscheidet der SERVER - sm-active steht schon
      im ausgelieferten HTML, an der Leiste und am Bereich. -->
 <div class="sm-tabs">
-<?php foreach ($gv_reiter as $gv_k => $gv_schl): $gv_id = 'tab-' . $gv_k; ?>
-	<a class="sm-tab<?= $gv_tab === $gv_id ? ' sm-active' : '' ?>" data-ziel="<?= gv_e($gv_id) ?>"
-	   href="index.php?form=<?= gv_e($gv_k) ?>"><?= $gv_schl === null ? 'MQTT' : gv_e(gv_t($gv_schl)) ?></a>
-<?php endforeach; ?>
+	<a class="sm-tab<?= $gv_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings"
+	   href="index.php?form=settings"><?= gv_e(gv_t('REITER.EINSTELLUNGEN')) ?></a>
+	<a class="sm-tab<?= $gv_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt"
+	   href="index.php?form=mqtt">MQTT</a>
+	<a class="sm-tab<?= $gv_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone"
+	   href="index.php?form=loxone"><?= gv_e(gv_t('REITER.LOXONE')) ?></a>
+	<a class="sm-tab<?= $gv_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test"
+	   href="index.php?form=test"><?= gv_e(gv_t('REITER.TEST')) ?></a>
+	<a class="sm-tab<?= $gv_tab === 'tab-log' ? ' sm-active' : '' ?>" data-ziel="tab-log"
+	   href="index.php?form=log"><?= gv_e(gv_t('REITER.LOG')) ?></a>
 </div>
 
 <!-- ================= Reiter: Einstellungen ================= -->
@@ -518,14 +756,17 @@ if ($gv_rahmen) {
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="dienst" value="start"><?= gv_e(gv_t('EINST.K_START')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="restart"><?= gv_e(gv_t('EINST.K_NEUSTART')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="dienst" value="stop"><?= gv_e(gv_t('EINST.K_STOPP')) ?></button>
   </form>
 </div>
@@ -550,6 +791,7 @@ if ($gv_rahmen) {
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="uebernehmen" value="1"><?= gv_e(gv_t('EINST.K_UEBERNEHMEN')) ?></button>
   </form>
 </div>
@@ -560,18 +802,21 @@ if ($gv_rahmen) {
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
 
 <h2><?= gv_e(gv_t('EINST.H_GERAETE')) ?></h2>
 <div class="sm-hinweis"><?= gv_t('EINST.GERAETE_ERKLAERUNG') ?></div>
 <table class="sm-tbl">
-<tr><th style="width:28px;">#</th><th><?= gv_e(gv_t('EINST.T_NAME')) ?></th>
+<tr><th style="width:28px;">#</th><th style="width:44px;"><?= gv_e(gv_t('EINST.T_NR')) ?></th>
+    <th><?= gv_e(gv_t('EINST.T_NAME')) ?></th>
     <th style="width:90px;"><?= gv_e(gv_t('EINST.T_ART')) ?></th>
     <th><?= gv_e(gv_t('EINST.T_IP')) ?></th>
     <th style="width:80px;"><?= gv_e(gv_t('EINST.T_SKU')) ?></th>
     <th><?= gv_e(gv_t('EINST.T_DEVICE')) ?></th>
     <th style="width:70px;"><?= gv_e(gv_t('EINST.T_PIXEL')) ?></th>
     <th style="width:70px;"><?= gv_e(gv_t('EINST.T_KMIN')) ?></th>
-    <th style="width:70px;"><?= gv_e(gv_t('EINST.T_KMAX')) ?></th></tr>
+    <th style="width:70px;"><?= gv_e(gv_t('EINST.T_KMAX')) ?></th>
+    <th style="width:110px;"><?= gv_e(gv_t('EINST.T_PT')) ?></th></tr>
 <?php
 $gv_roh = isset($gv_cfg['geraete']) && is_array($gv_cfg['geraete']) ? $gv_cfg['geraete'] : array();
 for ($gv_i = 0; $gv_i < 8; $gv_i++) {
@@ -580,6 +825,7 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 ?>
 <tr>
 <td><?= $gv_i + 1 ?></td>
+<td><input data-role="none" type="hidden" name="g_nr[]" value="<?= gv_e($gv_v('nr')) ?>"><?= $gv_v('nr') !== '' ? (int) $gv_v('nr') : '&ndash;' ?></td>
 <td><input data-role="none" type="text" name="g_name[]" value="<?= gv_e($gv_v('name')) ?>" size="14"></td>
 <td><select data-role="none" name="g_art[]">
     <option value="lan"<?= $gv_v('art') !== 'cloud' ? ' selected' : '' ?>>LAN</option>
@@ -591,10 +837,39 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 <td><input data-role="none" type="text" name="g_pixel[]" value="<?= gv_e($gv_v('pixel')) ?>" size="3"></td>
 <td><input data-role="none" type="text" name="g_kmin[]" value="<?= gv_e($gv_v('kmin')) ?>" size="4" placeholder="2700"></td>
 <td><input data-role="none" type="text" name="g_kmax[]" value="<?= gv_e($gv_v('kmax')) ?>" size="4" placeholder="6500"></td>
+<td><select data-role="none" name="g_pt[]">
+    <option value="0"<?= $gv_v('pt') !== '1' ? ' selected' : '' ?>><?= gv_e(gv_t('EINST.O_PT_STANDARD')) ?></option>
+    <option value="1"<?= $gv_v('pt') === '1' ? ' selected' : '' ?>><?= gv_e(gv_t('EINST.O_PT_PTREAL')) ?></option>
+</select></td>
 </tr>
 <?php } ?>
 </table>
 <div class="sm-hilfe"><?= gv_t('EINST.GERAETE_HILFE') ?></div>
+
+<h2><?= gv_e(gv_t('EINST.H_SZENEN')) ?></h2>
+<div class="sm-hinweis"><?= gv_t('EINST.SZENEN_ERKLAERUNG') ?></div>
+<table class="sm-tbl">
+<tr><th style="width:28px;">#</th><th style="width:24%;"><?= gv_e(gv_t('EINST.T_SZENE_NAME')) ?></th>
+    <th style="width:70px;"><?= gv_e(gv_t('EINST.T_SKU')) ?></th>
+    <th><?= gv_e(gv_t('EINST.T_SZENE_CMD')) ?></th></tr>
+<?php
+$gv_sroh = isset($gv_cfg['szenen']) && is_array($gv_cfg['szenen']) ? $gv_cfg['szenen'] : array();
+for ($gv_i = 0; $gv_i < 8; $gv_i++) {
+    $gv_sz = isset($gv_sroh[$gv_i]) && is_array($gv_sroh[$gv_i]) ? $gv_sroh[$gv_i] : array();
+    $gv_scmds = isset($gv_sz['cmd']) && is_array($gv_sz['cmd']) ? implode(',', $gv_sz['cmd']) : '';
+?>
+<tr>
+<td><?= $gv_i + 1 ?></td>
+<td><input data-role="none" type="text" name="s_name[]" size="16"
+    value="<?= gv_e(isset($gv_sz['name']) ? $gv_sz['name'] : '') ?>"></td>
+<td><input data-role="none" type="text" name="s_sku[]" size="7"
+    value="<?= gv_e(isset($gv_sz['sku']) ? $gv_sz['sku'] : '') ?>"></td>
+<td><input data-role="none" type="text" name="s_cmd[]" style="width:100%;"
+    value="<?= gv_e($gv_scmds) ?>"></td>
+</tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= gv_t('EINST.SZENEN_HILFE') ?></div>
 
 <h2><?= gv_e(gv_t('EINST.H_TAKT')) ?></h2>
 <div class="sm-feld">
@@ -646,6 +921,21 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
   <label><input data-role="none" type="checkbox" name="cloud_key_loeschen" value="1">
   <?= gv_e(gv_t('EINST.L_KEY_LOESCHEN')) ?></label>
 </div>
+<?php
+list($gv_cliste, $gv_cts) = gv_cloud_liste();
+if ($gv_cliste) { ?>
+<h3><?= gv_e(gv_t('EINST.H_CLOUD_LISTE')) ?></h3>
+<p class="sm-hilfe"><?= sprintf(gv_e(gv_t('EINST.CLOUD_LISTE_STAND')), date('d.m.Y H:i', $gv_cts)) ?></p>
+<table class="sm-tbl">
+<tr><th><?= gv_e(gv_t('EINST.T_NAME')) ?></th><th><?= gv_e(gv_t('EINST.T_SKU')) ?></th>
+    <th><?= gv_e(gv_t('EINST.T_DEVICE')) ?></th></tr>
+<?php foreach ($gv_cliste as $gv_c) { ?>
+<tr><td><?= gv_e($gv_c['name']) ?></td><td><?= gv_e($gv_c['sku']) ?></td>
+    <td><span class="sm-mono"><?= gv_e($gv_c['device']) ?></span></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+
 <div class="sm-feld">
   <label for="cloud_takt"><?= gv_e(gv_t('EINST.L_CLOUD_TAKT')) ?></label>
   <input data-role="none" type="number" id="cloud_takt" name="cloud_takt" value="<?= gv_e($gv_cfg['cloud_takt']) ?>" min="1" max="1440">
@@ -659,6 +949,32 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= gv_e(gv_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+
+<h2><?= gv_e(gv_t('EINST.H_SICHERUNG')) ?></h2>
+<div class="sm-hinweis"><?= gv_t('EINST.SICHERUNG_ERKLAERUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-lesen"></i> <?= gv_t('LEGENDE.LESEN') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="sicherung_holen" value="1"><?= gv_e(gv_t('EINST.K_SICHERUNG')) ?></button>
+  </form>
+</div>
+
+<?php if ($gv_cliste) { ?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= gv_t('LEGENDE.TECHNIK') ?></span>
+</div>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="uebernehmen_cloud" value="1"><?= gv_e(gv_t('EINST.K_UEBERNEHMEN_CLOUD')) ?></button>
+  </form>
+</div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -668,6 +984,7 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
 <div class="sm-feld">
   <label><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= !empty($gv_cfg['mqtt_ein']) ? ' checked' : '' ?>>
   <?= gv_e(gv_t('EINST.L_MQTT')) ?></label>
@@ -793,23 +1110,44 @@ if ($gv_geraete) {
 <?php if ($gv_g['art'] === 'lan') { ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="ausgang"><?= gv_e(gv_t('LOX.K_VQ')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="szenen"><?= gv_e(gv_t('LOX.K_VQ_SZENEN')) ?></button>
   </form>
 <?php } ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="eingang"><?= gv_e(gv_t('LOX.K_VI')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="lox"><?= gv_e(gv_t('LOX.K_VQ_LOX')) ?></button>
   </form>
 </div>
 <?php } } else { ?>
 <div class="sm-hinweis"><?= gv_t('LOX.KEINE_GERAETE') ?></div>
+<?php } ?>
+
+<h3><?= gv_e(gv_t('LOX.H_SAMMEL')) ?></h3>
+<p class="sm-hilfe"><?= gv_t('LOX.SAMMEL_ERKLAERUNG') ?></p>
+<?php if ($gv_geraete) { ?>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="eingang_alle"><?= gv_e(gv_t('LOX.K_VI_ALLE')) ?></button>
+  </form>
+</div>
 <?php } ?>
 
 <h3><?= gv_e(gv_t('LOX.H_TOKEN')) ?></h3>
@@ -821,6 +1159,7 @@ if ($gv_geraete) {
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= gv_e(gv_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
@@ -877,6 +1216,19 @@ if ($gv_geraete) {
 <span><i class="sm-punkt sm-b-aktion"></i> <?= gv_t('LEGENDE.AKTION') ?></span>
 </div>
 
+<?php
+$gv_rohe = array();
+foreach ($gv_werte as $gv_nr => $gv_w) {
+    if (!empty($gv_w['roh'])) { $gv_rohe[$gv_nr] = $gv_w; }
+}
+if ($gv_rohe) { ?>
+<h3><?= gv_e(gv_t('TEST.H_ROHANTWORT')) ?></h3>
+<p class="sm-hilfe"><?= gv_t('TEST.ROHANTWORT_ERKLAERUNG') ?></p>
+<?php foreach ($gv_rohe as $gv_nr => $gv_w) { ?>
+<div class="sm-pre"><?= gv_e((int) $gv_nr . ' ' . $gv_w['name'] . ' (' . $gv_w['ip'] . ")\n" . $gv_w['roh']) ?></div>
+<?php } ?>
+<?php } ?>
+
 <h3><?= gv_e(gv_t('TEST.H_LESEN')) ?></h3>
 <div class="sm-knopfreihe">
   <a data-role="none" class="sm-btn sm-b-lesen" href="<?= gv_e($gv_basis) ?>?token=<?= gv_e($gv_token) ?>&amp;aktion=status&amp;geraet=1" target="_blank"><?= gv_e(gv_t('TEST.K_STATUS')) ?></a>
@@ -888,14 +1240,47 @@ if ($gv_geraete) {
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="selbsttest" value="1"><?= gv_e(gv_t('TEST.K_SELBSTTEST')) ?></button>
   </form>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="suche"><?= gv_e(gv_t('TEST.K_SUCHE')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="endpunkt"><?= gv_e(gv_t('TEST.K_ENDPUNKT')) ?></button>
   </form>
   <a data-role="none" class="sm-btn sm-b-technik" href="<?= gv_e($gv_basis) ?>?token=<?= gv_e($gv_token) ?>&amp;aktion=roh" target="_blank"><?= gv_e(gv_t('TEST.K_ROH')) ?></a>
 </div>
+
+<h3><?= gv_e(gv_t('TEST.H_MITSCHNITT')) ?></h3>
+<p class="sm-hilfe"><?= gv_t('TEST.MITSCHNITT_ERKLAERUNG') ?></p>
+<?php
+list($gv_mit_zeilen, $gv_mit_rest, $gv_mit_gross) = gv_mitschnitt_lesen(200);
+if ($gv_mit_rest > 0) { ?>
+<div class="sm-warnung"><?= sprintf(gv_e(gv_t('TEST.MITSCHNITT_LAEUFT')), (int) $gv_mit_rest) ?></div>
+<?php } ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-test">
+<input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+<div class="sm-feld">
+  <label for="test_mitschnitt"><?= gv_e(gv_t('TEST.L_MITSCHNITT')) ?></label>
+  <input data-role="none" type="number" id="test_mitschnitt" name="test_mitschnitt" value="60" min="10" max="600">
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="mitschnitt"><?= gv_e(gv_t('TEST.K_MITSCHNITT')) ?></button>
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="mitschnitt_aus"><?= gv_e(gv_t('TEST.K_MITSCHNITT_AUS')) ?></button>
+</div>
+</form>
+<?php if ($gv_mit_zeilen) { ?>
+<div class="sm-log"><?= gv_e(implode("\n", $gv_mit_zeilen)) ?></div>
+<p class="sm-hilfe"><?= sprintf(gv_e(gv_t('TEST.MITSCHNITT_GROSSE')), (int) $gv_mit_gross, GV_MITSCHNITT_MAX) ?></p>
+<?php } else { ?>
+<p class="sm-hilfe"><?= gv_t('TEST.MITSCHNITT_LEER') ?></p>
+<?php } ?>
 <?php if ($gv_testausgabe !== '') { ?>
 <div class="sm-pre"><?= gv_e($gv_testausgabe) ?></div>
 <?php } ?>
@@ -907,6 +1292,7 @@ if ($gv_geraete) {
 <?php } ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
 <div class="sm-feld">
   <label for="test_geraet"><?= gv_e(gv_t('TEST.L_GERAET')) ?></label>
   <select data-role="none" id="test_geraet" name="test_geraet">
@@ -942,14 +1328,23 @@ if ($gv_geraete) {
 <div class="sm-feld">
   <label for="test_szene"><?= gv_e(gv_t('TEST.L_SZENE')) ?></label>
   <select data-role="none" id="test_szene" name="test_szene">
-<?php foreach (gv_szenen() as $gv_s => $gv_sz) { ?>
-    <option value="<?= gv_e($gv_s) ?>"><?= gv_e(gv_t($gv_sz['name'])) ?> &ndash; <?= gv_e($gv_sz['sku']) ?> (<?= count($gv_sz['cmd']) ?>)</option>
+<?php foreach (gv_szenen_alle($gv_cfg) as $gv_s => $gv_sz) { ?>
+    <option value="<?= gv_e($gv_s) ?>"><?= gv_e(gv_szene_name($gv_sz)) ?> &ndash; <?= gv_e($gv_sz['sku']) ?> (<?= count($gv_sz['cmd']) ?>)<?= empty($gv_sz['eigen']) ? '' : ' *' ?></option>
 <?php } ?>
   </select>
   <div class="sm-hilfe"><?= gv_t('TEST.H_SZENE') ?></div>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="szene"><?= gv_e(gv_t('TEST.K_SZENE')) ?></button>
+</div>
+
+<div class="sm-feld">
+  <label for="test_szenenr"><?= gv_e(gv_t('TEST.L_SZENENR')) ?></label>
+  <input data-role="none" type="number" id="test_szenenr" name="test_szenenr" value="0" min="0" max="255">
+  <div class="sm-hilfe"><?= gv_t('TEST.H_SZENENR') ?></div>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="szenenr"><?= gv_e(gv_t('TEST.K_SZENENR')) ?></button>
 </div>
 
 <div class="sm-feld">
@@ -996,6 +1391,47 @@ foreach ($gv_geraete as $gv_g) { if ($gv_g['pixel'] > 0) { $gv_vorschau_pixel = 
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="segment"><?= gv_e(gv_t('TEST.K_SEGMENT')) ?></button>
 </div>
+
+<h3><?= gv_e(gv_t('TEST.H_MUSIK')) ?></h3>
+<p class="sm-hilfe"><?= gv_t('TEST.MUSIK_ERKLAERUNG') ?></p>
+<div class="sm-feld">
+  <label for="test_musik_gruppe"><?= gv_e(gv_t('TEST.L_MUSIK_GRUPPE')) ?></label>
+  <select data-role="none" id="test_musik_gruppe" name="test_musik_gruppe">
+<?php foreach (gv_musikgruppen() as $gv_mg => $gv_ms) { ?>
+    <option value="<?= (int) $gv_mg ?>"<?= $gv_mg === 0x0f ? ' selected' : '' ?>><?= gv_e(gv_t($gv_ms)) ?></option>
+<?php } ?>
+  </select>
+</div>
+<div class="sm-feld">
+  <label for="test_musik_art"><?= gv_e(gv_t('TEST.L_MUSIK_ART')) ?></label>
+  <input data-role="none" type="number" id="test_musik_art" name="test_musik_art" value="0" min="0" max="255">
+  <div class="sm-hilfe"><?= gv_t('TEST.H_MUSIK_ART') ?></div>
+</div>
+<div class="sm-feld">
+  <label for="test_musik_sens"><?= gv_e(gv_t('TEST.L_MUSIK_SENS')) ?></label>
+  <input data-role="none" type="number" id="test_musik_sens" name="test_musik_sens" value="100" min="0" max="100">
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="musik"><?= gv_e(gv_t('TEST.K_MUSIK')) ?></button>
+</div>
+
+<h3><?= gv_e(gv_t('TEST.H_TROCKEN')) ?></h3>
+<p class="sm-hilfe"><?= gv_t('TEST.TROCKEN_ERKLAERUNG') ?></p>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= gv_t('LEGENDE.TECHNIK') ?></span>
+</div>
+<div class="sm-feld">
+  <label for="test_trocken"><?= gv_e(gv_t('TEST.L_TROCKEN')) ?></label>
+  <select data-role="none" id="test_trocken" name="test_trocken">
+<?php foreach (array('ein', 'aus', 'hell', 'kelvin', 'farbe', 'szene', 'szenenr',
+                     'balken', 'segment', 'musik') as $gv_ta) { ?>
+    <option value="<?= gv_e($gv_ta) ?>"><?= gv_e($gv_ta) ?></option>
+<?php } ?>
+  </select>
+</div>
+<div class="sm-knopfreihe">
+  <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="trocken"><?= gv_e(gv_t('TEST.K_TROCKEN')) ?></button>
+</div>
 </form>
 
 <div class="sm-warnung"><b><?= gv_e(gv_t('TEST.H_UNGEPRUEFT')) ?></b><br><?= gv_t('TEST.UNGEPRUEFT') ?></div>
@@ -1022,6 +1458,7 @@ if (class_exists('LBWeb', false) && method_exists('LBWeb', 'loglist_html')) {
 <div class="sm-knopfreihe">
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-log">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="log_leeren" value="1"><?= gv_e(gv_t('LOG.K_LEEREN')) ?></button>
   </form>
 </div>

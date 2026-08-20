@@ -3,7 +3,7 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.1 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.9 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
 
@@ -19,7 +19,11 @@ Fassung 0.9.1 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 | **Prozentbalken** | „die ersten n Pixel leuchten" — für PV-Leistung, Ladezustand, Programmfortschritt |
 | **Musikbetrieb** | vier Befehlsgruppen, weil die Form je Modellreihe abweicht |
 | **Cloud** | offizielle Entwicklerschnittstelle mit API-Schlüssel, nur für Geräte ohne LAN Control |
-| **Loxone-Vorlagen** | fertige XML-Importdateien: virtueller Ausgang für Grundbefehle, virtueller Ausgang für Szenen und Balken, virtueller Eingang für den Zustand |
+| **Eigene Szenen** | wer die Befehlsfolge seiner eigenen Leuchte kennt, hinterlegt sie selbst; geprüft wird sie beim Speichern auf Länge und Prüfsumme |
+| **Loxone-Vorlagen** | fertige XML-Importdateien: virtueller Ausgang für Grundbefehle, virtueller Ausgang für Szenen und Balken, **virtueller Ausgang über den LoxBerry mit stufenlosen Analogwerten**, virtueller Eingang für den Zustand |
+| **Ausfallerkennung** | `OK` und `ALTER` werden zur Abrufzeit gerechnet, dazu ein Zähler fehlgeschlagener Abrufe in Folge und ein Herzschlag über MQTT |
+| **Diagnose** | Trockenlauf (zeigt, *was* ein Befehl sendet, ohne ihn zu senden), zeitlich begrenzter Mitschnitt des UDP-Verkehrs, Rohantwort je Leuchte |
+| **Gruppen** | `geraet=alle` schaltet alle eingerichteten Leuchten und liest sie in einem Abruf |
 
 ## Die drei Wege
 
@@ -93,9 +97,29 @@ RGBIC-Streifen.
 
     /plugins/govee/index.php?token=<TOKEN>&aktion=<Befehl>
 
-Lesend: `status`, `liste`, `szenen`, `roh`.
+Lesend: `status`, `liste`, `szenen`, `roh`. `status` nimmt `geraet=alle` und
+liefert dann alle Leuchten in einer Antwort, mit `G<Nr>_` vor jedem Feldnamen —
+damit reicht in Loxone **ein** virtueller Eingang statt einem je Gerät.
 Schaltend: `ein`, `aus`, `hell`, `kelvin`, `farbe`, `szene`, `balken`,
 `segment`, `musik`, `pt`, `abruf`, `suche`.
+
+Drei Angaben sind seit 0.9.9 dazugekommen, alle hinten angehängt, damit
+bestehende Suchmuster in Loxone gültig bleiben:
+
+* `szene` nimmt statt `name` auch `nr=0..255` — eine Szenenkennung ohne
+  Katalogeintrag.
+* `farbe` nimmt statt `hex` auch `wert=0..16777215`, gerechnet
+  `r*65536 + g*256 + b`. Das ist der Weg für einen virtuellen Ausgang: ein
+  `<v.0>` trägt genau **einen** Analogwert, drei Farbkanäle passen anders
+  nicht durch.
+* `hell` mit `wert=0` schaltet **aus**, statt auf die kleinste Stufe zu gehen.
+  Auf dem unmittelbaren UDP-Weg geht das nicht — dort erreicht der Rohwert
+  die Leuchte, ohne dass das Plugin ihn sieht.
+* Jede schaltende Aktion nimmt `geraet=alle` und geht dann an jede
+  eingerichtete Leuchte. Gemeldet wird je Gerät, nicht pauschal.
+
+Die Statuszeile trägt hinten zusätzlich `FEHL` — die Zahl der Abrufe in Folge,
+bei denen dieses Gerät nicht geantwortet hat.
 
 Das Token wird beim ersten Öffnen der Oberfläche erzeugt und mit `hash_equals`
 verglichen. Schaltende Aufrufe sind ab Werk gesperrt; rohe `ptReal`-Befehle
@@ -106,6 +130,22 @@ Fehlt ein Einzelwert, sendet der Endpunkt einen Strich statt einer erfundenen
 Null. Eine Null wäre eine stille Falschaussage, und in der Loxone-App sähe
 alles normal aus.
 
+## Was in dieser Fassung dazugekommen ist
+
+Der Nachrichtenbau steht seit 0.9.9 in der Bibliothek statt im Dienst
+(`gv_befehl_pruefen()` und `gv_nachricht_bauen()`). Der Trockenlauf im Reiter
+*Test* ruft dieselben zwei Funktionen auf und zeigt damit genau das, was im
+Ernstfall hinausgeht — zwei Kopien derselben Logik laufen zwangsläufig
+auseinander.
+
+Die Gerätenummer ist eine **Adresse** und keine Aufzählung mehr: sie steht in
+der Konfiguration und wird nie neu vergeben. Vorher war sie die Stellung in
+der Tabelle — wer die erste Zeile leerte, verschob alle folgenden, und
+`GOVEE_1_*`, `govee/geraet1/*` und `&geraet=1` zeigten still auf eine andere
+Leuchte. Eine bestehende Anlage merkt von der Umstellung nichts: beim ersten
+Speichern werden die Nummern genau so gebildet, wie die bisherige Zählung
+ausfiel.
+
 ## Aufbau
 
     bin/govee_dienst.php              Abrufdienst, hält Port 4002
@@ -115,8 +155,8 @@ alles normal aus.
     webfrontend/html/index.php        Endpunkt für den Miniserver, Token-geschützt
     webfrontend/htmlauth/index.php    Oberfläche, fünf Reiter
     webfrontend/htmlauth/gv_test.php  Selbstprüfung und die Aktionen des Reiters Test
-    templates/lang/language_de.ini    341 Schlüssel
-    templates/lang/language_en.ini    dieselben 341 Schlüssel
+    templates/lang/language_de.ini    466 Schlüssel
+    templates/lang/language_en.ini    dieselben 466 Schlüssel
 
 Der Cloud-Schlüssel steht in einer eigenen Datei mit den Rechten 0600, nicht in
 der Konfiguration, die die Oberfläche anzeigt. Sein Wert wird nirgends
@@ -166,4 +206,12 @@ gibt es eines, und die Adressen zeigen ausschließlich dorthin.
   Stand des Forumsbeitrags **nicht** über ptReal absetzen. Das Plugin bietet sie
   deshalb nicht an, statt sie ins Leere zu senden.
 * Über die Cloud sind nur die Grundbefehle möglich, keine Szenen und keine
-  Segmente.
+  Segmente. Der Zustand eines Cloud-Geräts wird im **Cloud-Takt** abgefragt,
+  nicht im LAN-Takt; die Altersgrenze für `OK` richtet sich entsprechend nach
+  `cloud_takt`. Meldet die Schnittstelle HTTP 429, wird `Retry-After` gelesen
+  und bis dahin nicht mehr abgerufen — ein übersprungener Lauf ist dabei kein
+  Fehler und rührt den Zustand nicht an.
+* Die Vorlage *Grundbefehle* schickt Helligkeit unmittelbar an die Leuchte.
+  Eine 0 aus Loxones Lichtsteuerung ergibt dort die kleinste Stufe statt
+  Dunkelheit; dafür bleibt der Begrenzer nötig. Über die Vorlage *Stufenlos
+  über den LoxBerry* nimmt das Plugin die 0 entgegen und schaltet aus.

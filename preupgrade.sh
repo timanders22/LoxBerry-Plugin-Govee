@@ -33,12 +33,17 @@ if [ -f "$CF" ]; then
         && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null \
         && echo "<OK> Konfiguration gesichert."
 fi
-# Die Datei mit dem Cloud-Schluessel wird bewusst NICHT neben den Ordner
-# gesichert: eine Sicherung daneben ueberlebt die Deinstallation, und dort
-# stuende dann ein gueltiger API-Schluessel herrenlos herum. Sie liegt
-# innerhalb von config/plugins/<ordner>/ und wird vom Installer nicht
-# angetastet, solange das Archiv keine gleichnamige Datei mitbringt - das tut
-# es nicht.
+# Die Datei mit dem Cloud-Schluessel WIRD neben den Ordner gesichert - und
+# das war bis 0.9.8 anders begruendet. Hier stand, sie werde bewusst nicht
+# gesichert, weil eine Sicherung daneben die Deinstallation ueberlebt und dort
+# ein gueltiger API-Schluessel herrenlos stuende. Vier Zeilen weiter unten tat
+# der spaeter angefuegte Block genau das - zwei Aussagen in einer Datei, von
+# denen eine falsch sein musste.
+#
+# Aufgeloest wird das so: gesichert wird sie (der Installer raeumt den
+# Konfigordner ab, und eine nie mitgelieferte Datei steht auf keiner Liste),
+# und die Deinstallation loescht die Sicherung ausdruecklich mit. Genau dafuer
+# gibt es uninstall/uninstall.
 echo "<OK> preupgrade abgeschlossen."
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
@@ -49,14 +54,14 @@ echo "<OK> preupgrade abgeschlossen."
 # an postupgrade.sh. Laeuft das aus irgendeinem Grund nicht durch, greift
 # jetzt postinstall.sh auf diese Zweitschrift zu - sie liegt ausserhalb des
 # ueberschriebenen Ordners und wird vom Installer nicht angefasst.
+# EIN Verfahren, nicht zwei. Bis 0.9.8 entstanden hier drei Dateien flach
+# nebeneinander - <ordner>.backup.json, <ordner>.backup.govee.json und
+# <ordner>.backup.geheim.json -, von denen eine wie die Kurzform der anderen
+# aussah. Die Konfiguration ist oben schon nach <ordner>.backup.json gesichert;
+# ein zweites Mal unter anderem Namen bringt nichts und kostet Verwechslung.
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-govee}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
-if [ -s "$NETZ_CFG/govee.json" ]; then
-    cp -p "$NETZ_CFG/govee.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json" 2>/dev/null
-fi
-echo "<INFO> Zweitschrift der Einstellungen angelegt."
 
 
 # NICHT MITGELIEFERTE Dateien - und gerade deshalb die wichtigen.

@@ -92,13 +92,30 @@ if ($gv_horcher === null) {
 }
 gv_log('Antwortport ' . GV_PORT_ANTWORT . ' geoeffnet.');
 
+/**
+ * Das Lebenszeichen - und die letzte Stoerung.
+ *
+ * Ein leerer $fehler loescht die bisherige NICHT. Bis 0.9.8 tat er das, und
+ * weil der Waechter den Dienst binnen einer Minute neu startet, war die
+ * Ursache eines Absturzes verschwunden, bevor jemand hinsah. Quittiert wird
+ * sie in der Oberflaeche.
+ */
 function gv_zustand_schreiben($fehler = '')
 {
-    gv_json_schreiben(gv_paths()['datadir'] . '/zustand.json', array(
-        'ts'     => time(),
-        'pid'    => getmypid(),
-        'fehler' => (string) $fehler,
-    ));
+    $pfad = gv_paths()['datadir'] . '/zustand.json';
+    $alt = gv_json_lesen($pfad);
+    $neu = array(
+        'ts'  => time(),
+        'pid' => getmypid(),
+    );
+    if ((string) $fehler !== '') {
+        $neu['fehler'] = (string) $fehler;
+        $neu['fehler_ts'] = time();
+    } else {
+        $neu['fehler'] = isset($alt['fehler']) ? (string) $alt['fehler'] : '';
+        $neu['fehler_ts'] = isset($alt['fehler_ts']) ? (int) $alt['fehler_ts'] : 0;
+    }
+    gv_json_schreiben($pfad, $neu);
 }
 
 /**
@@ -136,6 +153,10 @@ function gv_runde($horcher, $geraete, $wartezeit = 2)
             $d = isset($m['data']) && is_array($m['data']) ? $m['data'] : array();
             $farbe = isset($d['color']) && is_array($d['color']) ? $d['color'] : array();
             $treffer[$offen[$a['von']]] = array(
+                /* Die Rohantwort, gekappt. Welche Felder eine bestimmte
+                 * Leuchte ueberhaupt liefert, beantwortet nur sie selbst -
+                 * die Zuordnung darunter verengt sie auf sechs bekannte. */
+                'roh'    => substr((string) json_encode($d), 0, 600),
                 'an'     => isset($d['onOff']) ? (int) $d['onOff'] : null,
                 'hell'   => isset($d['brightness']) ? (int) $d['brightness'] : null,
                 'kelvin' => isset($d['colorTemInKelvin']) ? (int) $d['colorTemInKelvin'] : null,
@@ -144,6 +165,59 @@ function gv_runde($horcher, $geraete, $wartezeit = 2)
                 'b'      => isset($farbe['b']) ? (int) $farbe['b'] : null,
             );
         }
+    }
+    return $treffer;
+}
+
+/**
+ * Eine Runde ueber die CLOUD-Geraete.
+ *
+ * Bis 0.9.8 gab es sie nicht: gv_cloud_zustand() war definiert und wurde
+ * nirgends aufgerufen. Ein als Cloud eingerichtetes Geraet liess sich
+ * schalten, meldete am Endpunkt aber dauerhaft OK=0 und Striche.
+ *
+ * Sie laeuft im Cloud-Takt, nicht im LAN-Takt: die Schnittstelle hat eine
+ * Anfragegrenze von 30 Abfragen je Minute und Geraet.
+ */
+function gv_runde_cloud($geraete)
+{
+    $treffer = array();
+    foreach ($geraete as $nr => $g) {
+        if ($g['art'] !== 'cloud') {
+            continue;
+        }
+        list($antwort, $meldung) = gv_cloud_zustand($g['sku'], $g['device']);
+        if ($antwort === null) {
+            gv_log_gebremst('cloudzustand_' . $nr, 'Cloud-Zustand ' . $g['name'] . ': ' . $meldung);
+            continue;
+        }
+        /* Die Antwort traegt eine Liste von Faehigkeiten. Gelesen wird, was
+         * da ist - was fehlt, bleibt null und wird nicht erfunden. */
+        $werte = array('an' => null, 'hell' => null, 'kelvin' => null,
+                       'r' => null, 'g' => null, 'b' => null);
+        $caps = isset($antwort['payload']['capabilities'])
+            ? (array) $antwort['payload']['capabilities'] : array();
+        foreach ($caps as $c) {
+            $instanz = isset($c['instance']) ? (string) $c['instance'] : '';
+            $wert = isset($c['state']['value']) ? $c['state']['value'] : null;
+            if ($wert === null || !is_scalar($wert)) {
+                continue;
+            }
+            if ($instanz === 'powerSwitch') {
+                $werte['an'] = (int) $wert;
+            } elseif ($instanz === 'brightness') {
+                $werte['hell'] = (int) $wert;
+            } elseif ($instanz === 'colorTemperatureK') {
+                $werte['kelvin'] = (int) $wert;
+            } elseif ($instanz === 'colorRgb') {
+                $z = (int) $wert;
+                $werte['r'] = ($z >> 16) & 0xFF;
+                $werte['g'] = ($z >> 8) & 0xFF;
+                $werte['b'] = $z & 0xFF;
+            }
+        }
+        $werte['roh'] = substr((string) json_encode($caps), 0, 600);
+        $treffer[$nr] = $werte;
     }
     return $treffer;
 }
@@ -170,7 +244,7 @@ function gv_abbild_schreiben($treffer)
                 'pixel' => $g['pixel'],
                 'ok'    => 1,
                 'ts'    => time(),
-                'alter' => 0,
+                'fehl'  => 0,
             ), $z);
             $eintrag['hex'] = ($z['r'] === null || $z['g'] === null || $z['b'] === null)
                 ? null : sprintf('%02X%02X%02X', $z['r'], $z['g'], $z['b']);
@@ -185,27 +259,55 @@ function gv_abbild_schreiben($treffer)
                 'r' => null, 'g' => null, 'b' => null, 'hex' => null, 'ts' => 0,
             ), $vorher);
             $eintrag['ok'] = 0;
-            $eintrag['alter'] = ((int) $eintrag['ts'] > 0) ? (time() - (int) $eintrag['ts']) : -1;
+            /* Zaehler fehlgeschlagener Abrufe IN FOLGE. Er trennt "hakt kurz"
+             * von "seit Stunden tot"; in Loxone will man die Meldung erst beim
+             * zweiten oder dritten Fehlversuch. Zurueckgesetzt wird er nur,
+             * wenn wirklich Werte kamen. */
+            $eintrag['fehl'] = (isset($vorher['fehl']) ? (int) $vorher['fehl'] : 0) + 1;
+            /* 'alter' steht nicht mehr in der Datei: es wird beim LESEN
+             * gerechnet (gv_werte). Ein Wert aus einer aelteren Fassung wird
+             * hier entfernt, damit nicht zwei Wahrheiten nebeneinander stehen. */
+            unset($eintrag['alter']);
         }
         $neu[$nr] = $eintrag;
     }
 
+    /* Der Zeitstempel wird NUR bei Erfolg aufgefrischt. Vorher stand hier
+     * bedingungslos time(); gv_alter() lieferte damit dauerhaft fast 0, auch
+     * wenn seit Stunden keine Leuchte mehr geantwortet hatte - die Kachel
+     * "Letzter Abruf" mass nur noch, dass der Dienst lebt. Dass er lebt,
+     * beantwortet das Lebenszeichen in zustand.json, und zwar getrennt. */
+    $ts_alt = isset($alt['ts']) ? (int) $alt['ts'] : 0;
+    $fehler_folge = $ok_gesamt > 0
+        ? 0
+        : ((isset($alt['fehler_folge']) ? (int) $alt['fehler_folge'] : 0) + 1);
     gv_json_schreiben($p['datadir'] . '/loxone.json', array(
-        'ts'      => time(),
-        'ok'      => $ok_gesamt > 0 ? 1 : 0,
-        'geraete' => $neu,
+        'ts'           => $ok_gesamt > 0 ? time() : $ts_alt,
+        'ok'           => $ok_gesamt > 0 ? 1 : 0,
+        'fehler_folge' => $fehler_folge,
+        'geraete'      => $neu,
     ));
 
     if (!empty($cfg['mqtt_ein'])) {
+        /* Ein Herzschlag: 'lebt' und 'ts' gehen in JEDEM Durchlauf hinaus,
+         * auch waehrend einer Stoerung. Ohne ihn hoert ein toter Dienst
+         * einfach auf zu senden, die zuletzt gesendeten Werte bleiben stehen,
+         * und in Loxone sieht ein toter Dienst aus wie ein ruhiges Haus. */
+        $jetzt = time();
         $paare = array(
-            'ok'      => $ok_gesamt > 0 ? 1 : 0,
-            'geraete' => count($neu),
+            'ok'           => $ok_gesamt > 0 ? 1 : 0,
+            'geraete'      => count($neu),
+            'ts'           => $jetzt,
+            'lebt'         => 1,
+            'fehler_folge' => $fehler_folge,
         );
         foreach ($neu as $nr => $e) {
             $pfx = 'geraet' . $nr . '/';
+            $ts_g = isset($e['ts']) ? (int) $e['ts'] : 0;
             $paare[$pfx . 'name'] = $e['name'];
             $paare[$pfx . 'erreichbar'] = (int) $e['ok'];
-            $paare[$pfx . 'alter'] = (int) $e['alter'];
+            $paare[$pfx . 'alter'] = $ts_g > 0 ? max(0, $jetzt - $ts_g) : -1;
+            $paare[$pfx . 'fehl'] = isset($e['fehl']) ? (int) $e['fehl'] : 0;
             foreach (array('an', 'hell', 'kelvin', 'r', 'g', 'b', 'hex') as $f) {
                 if ($e[$f] !== null) {
                     $paare[$pfx . $f] = $e[$f];
@@ -229,51 +331,6 @@ function gv_antwort($kennung, $ok, $meldung)
         array('ok' => (int) $ok, 'meldung' => (string) $meldung, 'ts' => time()));
 }
 
-/**
- * Eine Segmentangabe der Form "1-3:ff0000,7:00ff00" auswerten.
- *
- * Pixel werden 1-basiert angegeben, weil der Anwender sie so zaehlt; intern
- * sind die Kennungen 0-basiert. Was nicht ins Muster passt, wird abgewiesen
- * und gemeldet - nie zurechtgebogen.
- *
- * Rueckgabe: array(Segmente|null, Meldung)
- */
-function gv_segmente_lesen($text, $pixel)
-{
-    $segmente = array();
-    $teile = explode(',', (string) $text);
-    if (count($teile) > 20) {
-        return array(null, 'Mehr als 20 Segmente sind nicht vorgesehen.');
-    }
-    foreach ($teile as $t) {
-        $t = trim($t);
-        if ($t === '') {
-            continue;
-        }
-        if (!preg_match('/^([0-9]{1,3})(?:-([0-9]{1,3}))?:([0-9a-fA-F]{6})$/', $t, $m)) {
-            return array(null, 'Der Abschnitt "' . $t . '" passt nicht ins Muster '
-                . 'Pixel:RRGGBB oder VonPixel-BisPixel:RRGGBB.');
-        }
-        $von = (int) $m[1];
-        /* Erst isset, dann vergleichen: nimmt die optionale Gruppe nicht
-         * teil, fehlt $m[2] ganz - unter PHP 8 waere der Zugriff davor eine
-         * Warnung. */
-        $bis = (!isset($m[2]) || $m[2] === '') ? $von : (int) $m[2];
-        if ($von < 1 || $bis < $von || $bis > $pixel) {
-            return array(null, 'Der Abschnitt "' . $t . '" liegt ausserhalb von 1 bis ' . $pixel . '.');
-        }
-        $ids = array();
-        for ($i = $von; $i <= $bis; $i++) {
-            $ids[] = $i - 1;
-        }
-        $segmente[] = array('ids' => $ids, 'rgb' => array(
-            hexdec(substr($m[3], 0, 2)), hexdec(substr($m[3], 2, 2)), hexdec(substr($m[3], 4, 2))));
-    }
-    if (!$segmente) {
-        return array(null, 'Es wurde kein Segment angegeben.');
-    }
-    return array($segmente, '');
-}
 
 /** Rueckgabe: array(ok, Meldung) */
 function gv_befehl_ausfuehren($b, $horcher)
@@ -324,30 +381,42 @@ function gv_befehl_ausfuehren($b, $horcher)
     if (empty($cfg['steuerung_ein'])) {
         return array(0, 'Schreibende Befehle sind gesperrt (Reiter Einstellungen).');
     }
+    /* Gruppenbefehl: an alle eingerichteten Leuchten. Gemeldet wird je Geraet,
+     * nicht pauschal - ein "ok" fuer acht Leuchten, von denen zwei nicht
+     * antworten, waere eine stille Falschaussage. */
+    if (isset($b['geraet']) && (string) $b['geraet'] === 'alle') {
+        $alle = gv_geraete();
+        if (!$alle) {
+            return array(0, 'Es ist kein Geraet eingerichtet.');
+        }
+        $teile = array();
+        $gut = 0;
+        foreach ($alle as $n => $unused) {
+            $einzeln = $b;
+            $einzeln['geraet'] = (int) $n;
+            list($o, $m) = gv_befehl_ausfuehren($einzeln, $horcher);
+            if ((int) $o === 1) {
+                $gut++;
+            }
+            $teile[] = $n . ': ' . $m;
+        }
+        return array($gut > 0 ? 1 : 0,
+            $gut . ' von ' . count($alle) . ' Geraeten angenommen. ' . implode(' | ', $teile));
+    }
+
     $nr = isset($b['geraet']) ? (int) $b['geraet'] : 1;
     $g = gv_geraet($nr);
     if ($g === null) {
         return array(0, 'Geraet ' . $nr . ' ist nicht eingerichtet.');
     }
 
-    /* Pflichtangaben je Aktion. Der Endpunkt prueft sie bereits, aber die
-     * Warteschlange liegt im Dateisystem - eine unvollstaendige Datei darf
-     * hier keine Warnung ausloesen, sondern muss eine Meldung ergeben. */
-    $braucht = array(
-        'hell'    => array('wert'),
-        'kelvin'  => array('wert'),
-        'balken'  => array('wert'),
-        'farbe'   => array('r', 'g', 'b'),
-        'szene'   => array('name'),
-        'segment' => array('segmente'),
-        'pt'      => array('cmd'),
-    );
-    if (isset($braucht[$aktion])) {
-        foreach ($braucht[$aktion] as $pflicht) {
-            if (!isset($b[$pflicht])) {
-                return array(0, 'Dem Befehl ' . $aktion . ' fehlt die Angabe ' . $pflicht . '.');
-            }
-        }
+    /* Pflichtangaben und Nachrichtenbau stehen in der Bibliothek - der
+     * Trockenlauf im Reiter Test ruft dieselben zwei Funktionen auf und
+     * zeigt damit genau das, was hier hinausgeht. Zwei Kopien derselben
+     * Logik laufen zwangslaeufig auseinander. */
+    list($pok, $pmeldung) = gv_befehl_pruefen($aktion, $b);
+    if (!$pok) {
+        return array(0, $pmeldung);
     }
 
     /* --- Cloud-Geraete koennen nur die Grundbefehle --- */
@@ -355,125 +424,9 @@ function gv_befehl_ausfuehren($b, $horcher)
         return gv_befehl_cloud($g, $aktion, $b);
     }
 
-    $nachricht = null;
-    switch ($aktion) {
-        case 'ein':
-            $nachricht = gv_cmd_schalten(1);
-            break;
-        case 'aus':
-            $nachricht = gv_cmd_schalten(0);
-            break;
-        case 'hell':
-            $nachricht = gv_cmd_helligkeit((int) $b['wert']);
-            break;
-        case 'kelvin':
-            $k = (int) $b['wert'];
-            if ($k < $g['kmin'] || $k > $g['kmax']) {
-                return array(0, sprintf('%d K liegt ausserhalb des eingestellten Bereichs %d bis %d K.',
-                    $k, $g['kmin'], $g['kmax']));
-            }
-            $nachricht = gv_cmd_kelvin($k);
-            break;
-        case 'farbe':
-            $nachricht = gv_cmd_farbe((int) $b['r'], (int) $b['g'], (int) $b['b']);
-            break;
-
-        case 'szene':
-            $szenen = gv_szenen();
-            $s = isset($b['name']) ? (string) $b['name'] : '';
-            if (!isset($szenen[$s])) {
-                return array(0, 'Die Szene "' . $s . '" steht nicht im Katalog.');
-            }
-            $nachricht = gv_pt_nachricht($szenen[$s]['cmd']);
-            break;
-
-        case 'balken':
-            if ($g['pixel'] < 1) {
-                return array(0, 'Fuer ' . $g['name'] . ' ist keine Pixelzahl hinterlegt - '
-                    . 'ohne sie laesst sich kein Balken bauen (Reiter Einstellungen).');
-            }
-            $rgb = array(0x64, 0x64, 0x00);
-            if (isset($b['hex']) && preg_match('/^[0-9a-fA-F]{6}$/', (string) $b['hex'])) {
-                $rgb = array(hexdec(substr($b['hex'], 0, 2)), hexdec(substr($b['hex'], 2, 2)),
-                             hexdec(substr($b['hex'], 4, 2)));
-            }
-            $cmds = gv_pt_balken((int) $b['wert'], $rgb, $g['pixel']);
-            if ($cmds === null) {
-                return array(0, 'Der Balkenbefehl liess sich nicht bauen.');
-            }
-            $nachricht = gv_pt_nachricht($cmds);
-            break;
-
-        case 'segment':
-            if ($g['pixel'] < 1) {
-                return array(0, 'Fuer ' . $g['name'] . ' ist keine Pixelzahl hinterlegt.');
-            }
-            list($segmente, $meldung) = gv_segmente_lesen(isset($b['segmente']) ? $b['segmente'] : '',
-                                                          $g['pixel']);
-            if ($segmente === null) {
-                return array(0, $meldung);
-            }
-            /* Zweites Verfahren: Segmente als Bitmaske (H70C4 und Verwandte).
-             * Dort werden die Segmente ab 1 gezaehlt, nicht ab 0 - deshalb
-             * die Kennungen um eins zurueckdrehen. */
-            $verfahren = isset($b['verfahren']) ? (string) $b['verfahren'] : 'graffiti';
-            if ($verfahren === 'maske') {
-                $gruppen = array();
-                foreach ($segmente as $s) {
-                    $nummern = array();
-                    foreach ($s['ids'] as $id) {
-                        $nummern[] = $id + 1;
-                    }
-                    $gruppen[] = array('nummern' => $nummern, 'rgb' => $s['rgb']);
-                }
-                $cmds = gv_pt_segment_maske($gruppen,
-                    isset($b['hgint']) ? (int) $b['hgint'] : null);
-                if ($cmds === null) {
-                    return array(0, 'Das Maskenverfahren fasst nur die Segmente 1 bis 16.');
-                }
-                $nachricht = gv_pt_nachricht($cmds);
-                break;
-            }
-            $hg = array(0, 0, 0);
-            if (isset($b['hg']) && preg_match('/^[0-9a-fA-F]{6}$/', (string) $b['hg'])) {
-                $hg = array(hexdec(substr($b['hg'], 0, 2)), hexdec(substr($b['hg'], 2, 2)),
-                            hexdec(substr($b['hg'], 4, 2)));
-            }
-            $cmds = gv_pt_graffiti(
-                isset($b['bewegung']) ? (int) $b['bewegung'] : 0x09,
-                isset($b['geschw']) ? (int) $b['geschw'] : 0,
-                isset($b['hgint']) ? (int) $b['hgint'] : 0,
-                $hg, $segmente);
-            if ($cmds === null) {
-                return array(0, 'Der Segmentbefehl passt nicht in die zulaessige Paketzahl.');
-            }
-            $nachricht = gv_pt_nachricht($cmds);
-            break;
-
-        case 'musik':
-            $cmds = gv_pt_musik(isset($b['gruppe']) ? (int) $b['gruppe'] : 0x0f,
-                                isset($b['art']) ? (int) $b['art'] : 0,
-                                isset($b['sens']) ? (int) $b['sens'] : 0x64);
-            if ($cmds === null) {
-                return array(0, 'Unbekannte Befehlsgruppe fuer den Musikbetrieb.');
-            }
-            $nachricht = gv_pt_nachricht($cmds);
-            break;
-
-        case 'pt':
-            if (empty($cfg['pt_frei'])) {
-                return array(0, 'Rohe ptReal-Befehle sind gesperrt (Reiter Einstellungen).');
-            }
-            $roh = isset($b['cmd']) ? (array) $b['cmd'] : array();
-            list($geprueft, $meldung) = gv_pt_pruefen($roh);
-            if ($geprueft === null) {
-                return array(0, $meldung);
-            }
-            $nachricht = gv_pt_nachricht($geprueft);
-            break;
-
-        default:
-            return array(0, 'Unbekannte Aktion: ' . $aktion);
+    list($nachricht, $bmeldung) = gv_nachricht_bauen($aktion, $g, $b, $cfg);
+    if ($nachricht === null) {
+        return array(0, $bmeldung);
     }
 
     list($ok, $fehler) = gv_udp_senden($g['ip'], GV_PORT_BEFEHL, $nachricht);
@@ -605,12 +558,27 @@ do {
 
     if (!empty($cfg['cloud_ein']) && $jetzt - $gv_letzte_cloud >= max(1, (int) $cfg['cloud_takt']) * 60) {
         $gv_letzte_cloud = $jetzt;
-        list($antwort, $meldung) = gv_cloud_geraete();
-        if ($antwort === null) {
-            gv_log_gebremst('cloud', 'Cloud: ' . $meldung);
+        if (gv_cloud_sperre_lesen() > $jetzt) {
+            /* Ein uebersprungener Lauf ist KEIN Fehler: er ruehrt den Zustand
+             * nicht an und sendet kein Lebenszeichen mit ok=0, sonst saehe ein
+             * gestreckter Takt in Loxone aus wie ein Ausfall. */
+            gv_log_gebremst('cloud_sperre', 'Cloud: Kontingent, bis '
+                . date('H:i:s', gv_cloud_sperre_lesen()) . ' wird nicht abgerufen.', 600);
         } else {
-            gv_json_schreiben($gv_p['datadir'] . '/cloud.json',
-                array('ts' => time(), 'antwort' => $antwort));
+            list($antwort, $meldung) = gv_cloud_geraete();
+            if ($antwort === null) {
+                gv_log_gebremst('cloud', 'Cloud: ' . $meldung);
+            } else {
+                gv_json_schreiben($gv_p['datadir'] . '/cloud.json',
+                    array('ts' => time(), 'antwort' => $antwort));
+            }
+            /* Und der Zustand je Cloud-Geraet - der Grund, warum es diesen
+             * Takt ueberhaupt gibt. */
+            $gv_cloudtreffer = gv_runde_cloud(gv_geraete());
+            if ($gv_cloudtreffer) {
+                gv_abbild_schreiben(array_replace(gv_runde($gv_horcher, gv_geraete(), 2),
+                                                  $gv_cloudtreffer));
+            }
         }
     }
 
