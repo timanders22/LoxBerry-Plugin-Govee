@@ -117,11 +117,17 @@ if ($gv_post && isset($_POST['vorlage'])) {
 
 /* ---------------- Sicherung herunterladen ---------------- */
 if ($gv_post && isset($_POST['sicherung_holen'])) {
-    /* Ausgegeben wird die Konfiguration, NICHT die Datei mit dem
-     * Cloud-Schluessel. Der liegt in geheim.json mit den Rechten 0600 und
-     * wird nirgends ausgegeben - eine Sicherung, die ihn mitnimmt, legte ihn
-     * in den Download-Ordner des Browsers. */
-    $gv_sich = gv_config();
+    /* Der Cloud-Schluessel gehoert MIT in die Datei (Hausstandard,
+     * 25.08.2026). Bis 0.9.9 blieb er bewusst draussen - mit der
+     * Begruendung, eine Sicherung duerfe ihn nicht in den Download-Ordner
+     * legen. Das Argument stimmt, es beantwortet aber die falsche Frage:
+     * Zweck der Datei ist der UMZUG auf einen zweiten LoxBerry. Ohne den
+     * Schluessel stuenden dort alle Felder richtig, und das Plugin kaeme
+     * trotzdem nicht an die Cloud - die Datei waere wertlos.
+     *
+     * Damit traegt sie ein Geheimnis, und der Hinweis daneben sagt das:
+     * wie ein Passwort behandeln, nicht in ein Forum haengen. */
+    $gv_sich = array_merge(gv_config(), gv_geheim());
     $gv_js = json_encode($gv_sich, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($gv_js === false) {
         $gv_fehler[] = gv_t('EINST.FEHLER_SICHERUNG');
@@ -133,6 +139,48 @@ if ($gv_post && isset($_POST['sicherung_holen'])) {
         exit;
     }
 }
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht erst
+ * gelesen. */
+if ($gv_post && isset($_POST['gv_zurueck'])) {
+    $gv_tab = 'tab-settings';
+    if (!isset($_FILES['gv_sicherung']) || !is_array($_FILES['gv_sicherung'])
+        || !isset($_FILES['gv_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['gv_sicherung']['tmp_name'])) {
+        $gv_fehler[] = gv_t('EINST.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['gv_sicherung']['size'] > 262144) {
+        $gv_fehler[] = gv_t('EINST.SICH_ZU_GROSS');
+    } else {
+        $gv_roh = (string) @file_get_contents($_FILES['gv_sicherung']['tmp_name']);
+        $gv_roh_daten = json_decode($gv_roh, true);
+        if (!is_array($gv_roh_daten)) { $gv_roh_daten = array(); }
+        list($gv_neu, $gv_mangel, $gv_n) = gv_sicherung_lesen($gv_roh);
+        if ($gv_neu === null) {
+            /* Eine halb gueltige Datei ueberschreibt NICHTS - und ALLE
+             * Beanstandungen werden genannt, nicht nur die erste. */
+            $gv_fehler[] = gv_t('EINST.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $gv_mangel);
+        } elseif (gv_config_speichern($gv_neu)) {
+            /* Der Cloud-Schluessel liegt in einer EIGENEN Datei mit 0600 -
+             * gv_config_speichern() fasst sie nicht an. Er wird deshalb
+             * hier gesondert zurueckgelegt, sonst kaeme die Sicherung
+             * vollstaendig herein und der Schluessel bliebe draussen. */
+            if (isset($gv_roh_daten['cloud_key'])) {
+                $gv_g = gv_geheim();
+                $gv_g['cloud_key'] = (string) $gv_roh_daten['cloud_key'];
+                gv_geheim_speichern($gv_g);
+            }
+            $gv_meldungen[] = sprintf(gv_t('EINST.SICH_UEBERNOMMEN'), $gv_n);
+        } else {
+            $gv_fehler[] = gv_t('EINST.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 
 /* ---------------- Einstellungen speichern ---------------- */
 if ($gv_post && isset($_POST['speichern'])) {
@@ -962,6 +1010,20 @@ if ($gv_cliste) { ?>
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="sicherung_holen" value="1"><?= gv_e(gv_t('EINST.K_SICHERUNG')) ?></button>
   </form>
 </div>
+<div class="sm-warnung"><?= gv_t('EINST.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>
+    <input data-role="none" type="file" name="gv_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gv_zurueck" value="1"><?= gv_e(gv_t('EINST.K_ZURUECK')) ?></button>
+  </form>
+</div>
+
 
 <?php if ($gv_cliste) { ?>
 <div class="sm-legende">
@@ -1020,7 +1082,7 @@ if ($gv_cliste) { ?>
 <div class="sm-step">
 <?= gv_t('MQTT.ABO_TEXT') ?>
 <div class="sm-pre"><?= gv_e($gv_thema) ?>/#</div>
-<b><?= gv_t('MQTT.ABO_WARNUNG') ?></b>
+<b><?= gv_abo_text() ?></b>
 </div>
 
 <h2><?= gv_e(gv_t('MQTT.H_THEMEN')) ?></h2>
@@ -1044,7 +1106,7 @@ if ($gv_cliste) { ?>
 <div class="sm-step"><b>2. <?= gv_e(gv_t('LOX.S2_T')) ?></b><br>
 <?= gv_t('LOX.S2') ?>
 <div class="sm-pre"><?= gv_e($gv_thema) ?>/#</div>
-<b><?= gv_t('MQTT.ABO_WARNUNG') ?></b>
+<b><?= gv_abo_text() ?></b>
 </div>
 
 <div class="sm-step"><b>3. <?= gv_e(gv_t('LOX.S3_T')) ?></b><br>

@@ -2128,7 +2128,7 @@ function gv_mqtt_wert_saeubern($v)
 function gv_mqtt_zustand()
 {
     $p = gv_paths();
-    $leer = array('gefunden' => 0, 'autostart' => 0, 'udpport' => 0, 'broker' => '',
+    $leer = array('gefunden' => 0, 'autostart' => 0, 'fassung' => 0, 'udpport' => 0, 'broker' => '',
                   'brokerport' => '', 'lokal' => 0);
     if ($p['home'] === '') {
         return $leer;
@@ -2152,12 +2152,43 @@ function gv_mqtt_zustand()
     return array(
         'gefunden'   => 1,
         'autostart'  => in_array((string) $hol('Gatewayautostart', 'gatewayautostart'), array('1', 'true'), true) ? 1 : 0,
+        /* Die FASSUNG des MQTT-Gateways, ab Werk 1. Sie entscheidet, was der
+         * Anwender eintragen muss: unter V1 jedes Thema von Hand, ab V2
+         * erscheint die Themengruppe von selbst in den Subscriptions.
+         * 0 heisst "nicht feststellbar" - dann wird nichts behauptet,
+         * sondern es werden beide Faelle genannt. */
+        'fassung'    => (int) $hol('Gatewayversion', 'gatewayversion'),
         'udpport'    => (int) $hol('Udpinport', 'udpinport'),
         'broker'     => (string) $hol('Brokerhost', 'brokerhost'),
         'brokerport' => (string) $hol('Brokerport', 'brokerport'),
         'lokal'      => in_array((string) $hol('Uselocalbroker', 'uselocalbroker'), array('1', 'true'), true) ? 1 : 0,
     );
 }
+
+/**
+ * Der Hinweis zum MQTT-Abo - in der Fassung, die zum GATEWAY passt.
+ *
+ * Bis hierher stand an den Ausgabestellen unbedingt "Ohne diesen Eintrag
+ * kommt am Miniserver nichts an". Das gilt fuer Gateway V1, wo jedes Thema
+ * von Hand einzutragen ist. Ab V2 erscheint die Themengruppe von selbst in
+ * den Subscriptions - der Satz schickte jeden V2-Anwender zu einem
+ * Eingabeplatz, den es nicht gibt.
+ *
+ * Drei Ausgaenge, nicht zwei: ist die Fassung nicht feststellbar, werden
+ * BEIDE Faelle genannt statt einer behauptet.
+ */
+function gv_abo_text()
+{
+    $m = gv_mqtt_zustand();
+    $f = isset($m['fassung']) ? (int) $m['fassung'] : 0;
+    if ($f <= 0) {
+        return gv_t('MQTT.ABO_UNBEKANNT');
+    }
+    $gemessen = ' <span class="sm-mono">'
+              . sprintf(gv_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
+    return gv_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
+}
+
 
 /**
  * Werte ueber den UDP-Eingang des Gateways veroeffentlichen. Bewusst nicht
@@ -2812,4 +2843,53 @@ function gv_t($schluessel)
     }
     $teile = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$teile[0]][$teile[1]]) ? $texte[$teile[0]][$teile[1]] : $schluessel;
+}
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste davon ist der dritte:
+ * eine halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
+ * Haelfte uebernommene Konfiguration ist schlimmer als die alte.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin, und beides
+ * gehoert gesagt.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], Zahl uebernommener
+ * Werte).
+ */
+function gv_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(gv_t('EINST.SICH_KEIN_JSON')), 0);
+    }
+    $neu = gv_vorgaben();
+    /* Der Cloud-Schluessel steht nicht in den Vorgaben - er liegt in einer
+     * eigenen Datei. Fuer die Sicherung ist er trotzdem ein BEKANNTER
+     * Schluessel, sonst meldete das Zurueckspielen ihn als fremd und
+     * lehnte die ganze Datei ab. */
+    $bekannt = array_merge(array_keys($neu), array_keys(gv_geheim()));
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(gv_t('EINST.SICH_FREMD'), gv_e((string) $k));
+            continue;
+        }
+        if (!array_key_exists($k, $neu)) {
+            // gehoert in die Geheimnisdatei, nicht in die Konfiguration
+            $anzahl++;
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = gv_t('EINST.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
 }
