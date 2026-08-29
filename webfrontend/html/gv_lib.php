@@ -642,6 +642,7 @@ function gv_log($text)
     /* log/plugins liegt auf einer Ramdisk. Eine unbegrenzt wachsende Logdatei
      * frisst deshalb Arbeitsspeicher, nicht Plattenplatz - Rotation ist hier
      * kein Feinschliff. */
+    clearstatcache(true, $p['log']);
     if (is_file($p['log']) && filesize($p['log']) > 512000) {
         $rest = array_slice(file($p['log'], FILE_IGNORE_NEW_LINES) ?: array(), -400);
         @file_put_contents($p['log'], implode("\n", $rest) . "\n");
@@ -1103,6 +1104,16 @@ function gv_mitschnitt($richtung, $ip, $text, $cfg = null)
     if (!is_dir($p['logdir'])) {
         @mkdir($p['logdir'], 0775, true);
     }
+    /* Ohne diese Zeile schliesst das Tor unten nie. gv_mitschnitt() wird aus
+     * gv_udp_senden() und gv_udp_horchen() gerufen, und die stehen in der
+     * do...while-Schleife von bin/govee_dienst.php - EIN Prozess, der Stunden
+     * lebt. PHP merkt sich die Antworten von stat(): filesize() sieht die
+     * Groesse des ersten Aufrufs und danach nie wieder eine neue, denn
+     * file_put_contents(..., FILE_APPEND) macht den Eintrag nicht ungueltig.
+     * Die Obergrenze GV_MITSCHNITT_MAX greift dann nicht - und log/plugins
+     * liegt auf einer Ramdisk, der Mitschnitt fuellt also den Arbeitsspeicher.
+     * Dieselbe Zeile steht seit 0.9.11 in gv_log(); hier fehlte sie. */
+    clearstatcache(true, $datei);
     $gross = is_file($datei) ? (int) @filesize($datei) : 0;
     if ($gross >= GV_MITSCHNITT_MAX) {
         return false;

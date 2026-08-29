@@ -215,3 +215,29 @@ gibt es eines, und die Adressen zeigen ausschließlich dorthin.
   Eine 0 aus Loxones Lichtsteuerung ergibt dort die kleinste Stufe statt
   Dunkelheit; dafür bleibt der Begrenzer nötig. Über die Vorlage *Stufenlos
   über den LoxBerry* nimmt das Plugin die 0 entgegen und schaltet aus.
+
+## Fassung 0.9.11 — der Stat-Zwischenspeicher
+Die Protokollkappung (512 000 Byte) stand in
+`webfrontend/html/gv_lib.php:646`. PHP merkt sich aber die Antworten von
+`stat()`: innerhalb **eines** Prozesses sieht `filesize()` die erste Größe
+und danach nie wieder eine neue — `file_put_contents(…, FILE_APPEND)` macht
+den Eintrag nicht ungültig. Die Kappung fällt dann still aus.
+
+Gemessen am 29.08.2026, 20 000 Zeilen im selben Prozess:
+
+| | ohne `clearstatcache` | mit |
+|---|---|---|
+| PHP 7.4.33 | 1 220 000 Byte, **nicht gekappt** | 220 332 Byte, gekappt |
+| PHP 8.4.24 | 220 332 Byte, gekappt | 220 332 Byte, gekappt |
+
+Die beiden PHP-Fassungen verhalten sich also verschieden — und LoxBerry 3.x
+fährt 7.4. Wer nur unter 8.4 misst, sieht den Fehler nie. **Hier war der
+Fehler wirksam, nicht nur latent**: `bin/govee_dienst.php` ruft `gv_log()`
+in seiner Warteschleife. Das Protokoll wuchs auf der Ramdisk unbegrenzt
+weiter, und niemand sah es.
+
+Abhilfe: `clearstatcache(true, …)` **vor** dem Tor; der zweite Parameter
+beschränkt das Leeren auf diese eine Datei. Dasselbe Muster tragen Robonect,
+Saugroboter, SignalBot, Octopus, Sprachsteuerung und WärmepumpeCloud schon
+länger — es ist am 29.08.2026 im ganzen Bestand nachgezogen worden.
+
