@@ -341,6 +341,13 @@ function gv_endpunkt_probe($erzwingen = false, $hoechstalter = 300)
     $adresse = 'http://127.0.0.1/plugins/' . $p['plugin'] . '/index.php?token='
              . rawurlencode(gv_token()) . '&aktion=status&geraet=' . $nr;
     $erg = array('ts' => time(), 'alter' => 0, 'lage' => 'unbekannt', 'code' => 0, 'text' => '');
+    /* Eigenes Merkmal fuer "die Anfrage ist durchgelaufen". Frueher stand die
+     * Einstufung hinter `if ($erg['lage'] !== 'unbekannt')` - und 'lage'
+     * blieb auf dem Startwert 'unbekannt', wenn alles GEKLAPPT hatte. Die
+     * Wache lief also genau im Erfolgsfall nicht: 'gut' und 'falsch' waren
+     * unerreichbar, die Zeile meldete immer "nicht feststellbar", auch bei
+     * einem kaputten Endpunkt. */
+    $messbar = false;
 
     if (function_exists('curl_init')) {
         $ch = curl_init($adresse);
@@ -352,25 +359,36 @@ function gv_endpunkt_probe($erzwingen = false, $hoechstalter = 300)
         $fehler = curl_error($ch);
         curl_close($ch);
         if ($antwort === false) {
-            $erg['lage'] = 'unbekannt';
             $erg['text'] = $fehler;
         } else {
             $erg['text'] = substr((string) $antwort, 0, 300);
+            $messbar = true;
         }
     } elseif (ini_get('allow_url_fopen')) {
-        $kontext = stream_context_create(array('http' => array('timeout' => 3)));
+        /* 'ignore_errors': ohne das gibt file_get_contents bei HTTP 403 oder
+         * 500 nur FALSE zurueck - ein KAPUTTER Endpunkt sah dann aus wie
+         * "nicht messbar", also wie das harmloseste der drei Ergebnisse. Und
+         * der Code wurde fest mit 200 eingetragen, ohne je gelesen zu sein. */
+        $kontext = stream_context_create(array('http' => array(
+            'timeout' => 3, 'ignore_errors' => true)));
+        $http_response_header = array();
         $antwort = @file_get_contents($adresse, false, $kontext);
         $erg['text'] = ($antwort === false) ? '' : substr((string) $antwort, 0, 300);
-        $erg['code'] = ($antwort === false) ? 0 : 200;
-        if ($antwort === false) {
-            $erg['lage'] = 'unbekannt';
+        $erg['code'] = 0;
+        if (is_array($http_response_header)) {
+            foreach ($http_response_header as $gv_kopf) {
+                if (preg_match('#^HTTP/[0-9.]+ +([0-9]{3})#', $gv_kopf, $gv_t)) {
+                    $erg['code'] = (int) $gv_t[1];
+                }
+            }
         }
+        $messbar = ($antwort !== false && $erg['code'] > 0);
     } else {
         $erg['lage'] = 'unbekannt';
         $erg['text'] = 'weder curl noch allow_url_fopen';
     }
 
-    if ($erg['lage'] !== 'unbekannt') {
+    if ($messbar) {
         if ($erg['code'] === 200 && strpos($erg['text'], 'GOVEE;') === 0) {
             $erg['lage'] = 'gut';
         } elseif ($erg['code'] === 0) {

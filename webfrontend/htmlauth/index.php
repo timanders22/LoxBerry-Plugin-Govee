@@ -704,6 +704,25 @@ if ($gv_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
+/* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Nachgezogen am
+   05.09.2026 nach Regeln/04; Wortlaut aus VORLAGE_hausstandard.css.html.
+
+   Am Geraet gemessen (LoxBerry 4.0.0.15, components.css): die Rahmen-CSS
+   zeichnet seit der neuen Oberflaeche selbst einen Pfeil - Regel
+   ".lb-content select". Darauf kann sich eine Plugin-Oberflaeche nicht
+   verlassen: die Regel gibt es erst seit dieser Fassung, und die eigene
+   Feldregel loescht sie, sobald sie die Kurzform "background:" benutzt.
+   Dann steht ein Auswahlfeld da, das aussieht wie ein Textfeld.
+
+   Die Raute im SVG wird als %23 geschrieben: eine rohe Raute beendet in
+   einer CSS-Adresse den Wert. */
+.sm-wrap select {
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1l6 6 6-6' fill='none' stroke='%234f7d17' stroke-width='2'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 32px; cursor: pointer; }
+.sm-tbl select { padding-right: 28px; background-position: right 7px center; }
+
 </style>
 
 <div class="sm-wrap">
@@ -729,8 +748,9 @@ if ($gv_rahmen) {
     ?></span>
   </div>
   <div class="sm-kachel"><?= gv_e(gv_t('ALLG.LETZTER_ABRUF')) ?>
-    <b><?= $gv_alter < 0 ? '&ndash;' : (int) $gv_alter ?></b>
-    <span class="sm-hilfe"><?= $gv_alter < 0 ? gv_e(gv_t('ALLG.NIE')) : gv_e(gv_t('ALLG.SEKUNDEN')) ?></span>
+<?php $gv_d = gv_dauer($gv_alter); ?>
+    <b><?= $gv_alter < 0 ? '&ndash;' : gv_e($gv_d[0]) ?></b>
+    <span class="sm-hilfe"><?= gv_e($gv_d[1]) ?></span>
   </div>
   <div class="sm-kachel">MQTT
     <b class="<?= $gv_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $gv_mqtt['autostart'] ? gv_e(gv_t('ALLG.EIN')) : gv_e(gv_t('ALLG.AUS')) ?></b>
@@ -759,18 +779,19 @@ if ($gv_rahmen) {
 <div class="sm-hinweis">
 <b><?= gv_e($gv_w['name']) ?></b> (<?= gv_e(gv_t('ALLG.GERAET')) ?> <?= gv_e($gv_nr) ?>,
 <span class="sm-mono"><?= gv_e($gv_w['ip'] !== '' ? $gv_w['ip'] : $gv_w['art']) ?></span>)
-&middot; <?= gv_e(gv_t('ALLG.ZUSTAND')) ?>
+&middot; <?= gv_e(gv_t('ALLG.ZUSTAND')) ?>&#32;
 <b class="<?= !empty($gv_w['an']) ? 'sm-an' : 'sm-aus' ?>"><?= $gv_w['an'] === null ? '&ndash;' : ($gv_w['an'] ? gv_e(gv_t('ALLG.EIN')) : gv_e(gv_t('ALLG.AUS'))) ?></b>
-&middot; <?= gv_e(gv_t('ALLG.HELL')) ?> <?= $gv_w['hell'] === null ? '&ndash;' : gv_e($gv_w['hell']) . ' %' ?>
-&middot; <?= gv_e(gv_t('ALLG.KELVIN')) ?> <?= empty($gv_w['kelvin']) ? '&ndash;' : gv_e($gv_w['kelvin']) . ' K' ?>
-&middot; <?= gv_e(gv_t('ALLG.FARBE')) ?>
+&middot; <?= gv_e(gv_t('ALLG.HELL')) ?> <?= $gv_w['hell'] === null ? '&ndash;' : gv_e($gv_w['hell']) . ' %' ?>&#32;
+&middot; <?= gv_e(gv_t('ALLG.KELVIN')) ?> <?= empty($gv_w['kelvin']) ? '&ndash;' : gv_e($gv_w['kelvin']) . ' K' ?>&#32;
+&middot; <?= gv_e(gv_t('ALLG.FARBE')) ?>&#32;
 <?php if (!empty($gv_w['hex'])) { ?>
 <span class="sm-mono">#<?= gv_e($gv_w['hex']) ?></span>
 <i style="display:inline-block;width:14px;height:14px;border-radius:3px;border:1px solid #bbb;background:#<?= gv_e($gv_w['hex']) ?>;"></i>
 <?php } else { ?>&ndash;<?php } ?>
 <?php if (empty($gv_w['ok'])) { ?>
 <div class="sm-hilfe"><?= gv_e(gv_t('ALLG.VERALTET')) ?>
-<?= $gv_w['alter'] < 0 ? gv_e(gv_t('ALLG.NIE')) : ((int) $gv_w['alter'] . ' ' . gv_e(gv_t('ALLG.SEKUNDEN'))) ?></div>
+<?php $gv_d = gv_dauer($gv_w['alter']); ?>
+<?= $gv_w['alter'] < 0 ? gv_e(gv_t('ALLG.NIE')) : (gv_e($gv_d[0]) . ' ' . gv_e($gv_d[1])) ?></div>
 <?php } ?>
 </div>
 <?php } ?>

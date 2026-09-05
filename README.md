@@ -7,6 +7,42 @@ Fassung 0.9.9 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
 
+## Neu in 0.9.13
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 0.9.12 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`).
+
+- **`ALTER` meldete vor dem ersten Abruf 1,7 Milliarden Sekunden.** Eine
+  frische Anlage schreibt `"ts": 0`, und `isset()` ist für 0 wahr — gerechnet
+  wurde `time() - 0`, also der Abstand zur Epoche. Der Wert geht als `ALTER=`
+  an den Miniserver; ein virtueller Eingang sprang damit vor dem ersten Abruf
+  auf einen Wert, den keine Regel erwartet. Geprüft wird jetzt `$ts > 0`, und
+  „noch nie" ist `-1`. Zwei Stellen betroffen; eine dritte, `gv_werte()`,
+  machte es schon richtig — das war der Hinweis.
+
+- **Jeder unbekannte Schalter startete den Dienst.** `bin/govee_dienst.php`
+  kannte nur `--selbsttest` und `--einmal`, prüfte das aber nicht: am
+  05.09.2026 an der Anlage löste `--hilfe` einen Dauerlauf aus, ohne ein Wort
+  auszugeben. Ein Werkzeug, das auf eine Frage mit einem Dauerlauf antwortet,
+  ist eine Falle. Unbekannte Schalter werden jetzt abgewiesen.
+
+- **Eine Prüfzeile im Reiter *Test* konnte nie anschlagen.** Die Einstufung in
+  „gut" und „falsch" stand hinter `if ($erg['lage'] !== 'unbekannt')` — und
+  `lage` blieb genau dann auf dem Startwert `unbekannt`, wenn der Abruf
+  **geklappt** hatte. Die Zeile meldete deshalb immer „nicht feststellbar",
+  auch bei einem kaputten Endpunkt. Sie führt jetzt ein eigenes Merkmal dafür,
+  dass die Anfrage durchgelaufen ist, und `ignore_errors` sorgt dafür, dass
+  ein HTTP 403 oder 500 als Antwort ankommt und nicht als `false` — sonst sah
+  ein kaputter Endpunkt aus wie gar keiner.
+
+- **Zeitangaben in Worten.** `ALTER` erscheint in der Oberfläche jetzt als
+  Sekunde/Minute/Stunde/Tag statt als blanke Sekundenzahl; die Wörter stehen
+  in beiden Sprachdateien.
+
 ## Was es kann
 
 | | |

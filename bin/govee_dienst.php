@@ -58,10 +58,51 @@ if (in_array('--selbsttest', $argv, true)) {
     exit($fehl > 0 ? 1 : 0);
 }
 
+/* Nur bekannte Schalter. Ohne diese Wache startete JEDER unbekannte
+ * Schalter den Dienst - `--hilfe` tat es am 05.09.2026 an der Anlage, ohne
+ * ein Wort auszugeben. Ein Werkzeug, das auf eine Frage mit einem
+ * Dauerlauf antwortet, ist eine Falle. */
+/* Befehle, die die Statusabfrage NICHT sichtbar macht - siehe die Messung
+ * in gv_befehl_lan(). */
+define('GV_STILLE_BEFEHLE', array('szene', 'segment', 'musik', 'balken', 'pt'));
+
+$gv_bekannt = array('--selbsttest', '--einmal');
+foreach (array_slice($argv, 1) as $gv_arg) {
+    if (!in_array($gv_arg, $gv_bekannt, true)) {
+        fwrite(STDERR, "Unbekannter Schalter: " . $gv_arg . "
+"
+             . "Aufruf: " . basename($argv[0]) . " [--selbsttest | --einmal]
+"
+             . "  ohne Schalter laeuft der Dienst dauerhaft;
+"
+             . "  gestartet und angehalten wird er ueber bin/dienst.sh.
+");
+        exit(2);
+    }
+}
+
 $gv_einmal = in_array('--einmal', $argv, true);
 $gv_p = gv_paths();
 @mkdir($gv_p['datadir'] . '/befehle', 0775, true);
 @mkdir($gv_p['datadir'] . '/antworten', 0775, true);
+
+/* Nur EIN Dienst. Ohne diese Sperre banden zwei Dienste denselben
+ * UDP-Port 4002 (am Geraet mit `ss -lunp` gesehen: zwei Sockel); die
+ * Antworten der Leuchten verteilen sich dann auf beide, und jeder haelt
+ * die Haelfte fuer Ausfall. Das Handle muss leben, solange der Dienst
+ * lebt - deshalb steht es in einer Variablen und wird nicht geschlossen.
+ * Der Einmallauf nimmt die Sperre auch: er fragt dieselben Geraete. */
+$gv_sperre = @fopen($gv_p['datadir'] . '/dienst.sperre', 'c');
+if ($gv_sperre === false) {
+    fwrite(STDERR, "Sperrdatei nicht anzulegen: " . $gv_p['datadir'] . "/dienst.sperre
+");
+    exit(3);
+}
+if (!flock($gv_sperre, LOCK_EX | LOCK_NB)) {
+    fwrite(STDERR, "Es laeuft bereits ein Govee-Dienst. Zweiter Start abgebrochen.
+");
+    exit(3);
+}
 
 gv_log('Dienst gestartet (PID ' . getmypid() . ', PHP ' . PHP_VERSION . ').');
 
@@ -435,9 +476,23 @@ function gv_befehl_ausfuehren($b, $horcher)
     }
     /* Gesendet ist nicht bestaetigt: UDP kennt keine Quittung, und die
      * Govee-Leuchten antworten auf Steuerbefehle nicht. Genau das steht in
-     * der Meldung - ein "erledigt", das niemand geprueft hat, waere gelogen. */
+     * der Meldung - ein "erledigt", das niemand geprueft hat, waere gelogen.
+     *
+     * Und der Verweis auf die Statusabfrage gilt nicht fuer alles: devStatus
+     * meldet onOff, brightness, color und colorTem - eine BETRIEBSART meldet
+     * es nicht. Am 05.09.2026 an einer H61A8 gemessen: Helligkeit 100 -> 40
+     * und Farbe FF0113 -> 00FF00 standen binnen Sekunden in der Antwort;
+     * Szenenkennung und Musikbetrieb aenderten sie ueberhaupt nicht, auch
+     * nicht bei fuenf Abfragen im Vier-Sekunden-Takt. Auf eine Probe zu
+     * verweisen, die nichts sehen kann, ist derselbe Fehler wie ein
+     * ungeprueftes "erledigt". */
+    $stille = in_array($aktion, GV_STILLE_BEFEHLE, true);
     return array(1, 'An ' . $g['name'] . ' (' . $g['ip'] . ') gesendet. '
-        . 'UDP quittiert nicht; ob es angekommen ist, zeigt die naechste Statusabfrage.');
+        . 'UDP quittiert nicht; '
+        . ($stille
+            ? 'und die Statusabfrage zeigt diese Betriebsart nicht - ob sie angekommen ist, '
+              . 'sieht nur, wer auf die Leuchte schaut.'
+            : 'ob es angekommen ist, zeigt die naechste Statusabfrage.'));
 }
 
 /** Die Grundbefehle ueber die Cloud. Szenen und Segmente bleiben dem LAN vorbehalten. */

@@ -619,14 +619,55 @@ function gv_werte()
 function gv_dienst_lebenszeichen()
 {
     $z = gv_zustand();
-    return isset($z['ts']) ? max(0, time() - (int) $z['ts']) : -1;
+    /* $ts > 0, nicht isset(): eine frische Anlage schreibt "ts": 0, und
+     * isset() ist fuer 0 WAHR - gerechnet wuerde time() - 0, also die
+     * Epoche. gv_werte() macht es drei Dutzend Zeilen weiter oben richtig. */
+    $ts = isset($z['ts']) ? (int) $z['ts'] : 0;
+    return $ts > 0 ? max(0, time() - $ts) : -1;
 }
 
 /** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
 function gv_alter()
 {
     $l = gv_loxone();
-    return isset($l['ts']) ? max(0, time() - (int) $l['ts']) : -1;
+    /* Siehe gv_dienst_lebenszeichen(): "ts": 0 heisst "noch nie", nicht
+     * "1970". Dieser Wert geht als ALTER= auch an den Miniserver - vor dem
+     * ersten Abruf sprang ein virtueller Eingang sonst auf 1,7 Milliarden. */
+    $ts = isset($l['ts']) ? (int) $l['ts'] : 0;
+    return $ts > 0 ? max(0, time() - $ts) : -1;
+}
+
+/**
+ * Eine Dauer in Sekunden als Zahl und Einheit, getrennt.
+ *
+ * Getrennt, weil die Kacheln der Oberflaeche die Zahl gross und die Einheit
+ * klein darunter setzen; ein fertiger Satz passte dort nicht hinein. Der
+ * Endpunkt und der Reiter Test rechnen weiter in Sekunden - eine Maschine
+ * liest keine Stunden.
+ *
+ * @param int $sek Dauer in Sekunden, negativ heisst "noch nie".
+ * @return array array(Zahl als Zeichenkette, Einheit als Klartext)
+ */
+function gv_dauer($sek)
+{
+    $sek = (int) $sek;
+    if ($sek < 0) {
+        return array('&ndash;', gv_klartext('ALLG.NIE'));
+    }
+    if ($sek < 60) {
+        return array((string) $sek,
+                     gv_klartext($sek === 1 ? 'ALLG.SEKUNDE' : 'ALLG.SEKUNDEN'));
+    }
+    if ($sek < 3600) {
+        $n = (int) floor($sek / 60);
+        return array((string) $n, gv_klartext($n === 1 ? 'ALLG.MINUTE' : 'ALLG.MINUTEN'));
+    }
+    if ($sek < 86400) {
+        $n = (int) floor($sek / 3600);
+        return array((string) $n, gv_klartext($n === 1 ? 'ALLG.STUNDE' : 'ALLG.STUNDEN'));
+    }
+    $n = (int) floor($sek / 86400);
+    return array((string) $n, gv_klartext($n === 1 ? 'ALLG.TAG' : 'ALLG.TAGE'));
 }
 
 /* ==================================================================
@@ -2428,19 +2469,24 @@ function gv_status_felder($g = null)
 {
     $kmin = ($g !== null && isset($g['kmin'])) ? (int) $g['kmin'] : 0;
     $kmax = ($g !== null && isset($g['kmax'])) ? (int) $g['kmax'] : 10000;
+    /* Fuenftes Element: der KACHELNAME. Der Kommentar einer Vorlage wird in
+     * Loxone Config zum Anzeigenamen und muss kurz sein; die Spalte
+     * "Bedeutung" im Reiter Einbindung will dagegen den ganzen Satz. Zwei
+     * Abnehmer, zwei Texte, EINE Liste - gemessen am 05.09.2026: zwoelf
+     * Kommentare waren Saetze, der laengste 110 Zeichen. */
     return array(
-        'AN'     => array('',  0, 1,     'GV_FELD.AN'),
-        'HELL'   => array('%', 0, 100,   'GV_FELD.HELL'),
-        'KELVIN' => array('K', $kmin, $kmax, 'GV_FELD.KELVIN'),
-        'R'      => array('',  0, 255,   'GV_FELD.R'),
-        'G'      => array('',  0, 255,   'GV_FELD.G'),
-        'B'      => array('',  0, 255,   'GV_FELD.B'),
-        'OK'     => array('',  0, 1,     'GV_FELD.OK'),
+        'AN'     => array('',  0, 1,     'GV_FELD.AN',     'GV_KACHEL.AN'),
+        'HELL'   => array('%', 0, 100,   'GV_FELD.HELL',   'GV_KACHEL.HELL'),
+        'KELVIN' => array('K', $kmin, $kmax, 'GV_FELD.KELVIN', 'GV_KACHEL.KELVIN'),
+        'R'      => array('',  0, 255,   'GV_FELD.R',      'GV_KACHEL.R'),
+        'G'      => array('',  0, 255,   'GV_FELD.G',      'GV_KACHEL.G'),
+        'B'      => array('',  0, 255,   'GV_FELD.B',      'GV_KACHEL.B'),
+        'OK'     => array('',  0, 1,     'GV_FELD.OK',     'GV_KACHEL.OK'),
         /* -1 heisst "noch nie gemessen" - deshalb steht die Untergrenze auf
          * -1 und nicht auf 0. Neue Messgroessen werden hinten angehaengt,
          * damit bestehende Importe ihre Reihenfolge behalten. */
-        'ALTER'  => array('s', -1, 86400, 'GV_FELD.ALTER'),
-        'FEHL'   => array('', -1, 9999,  'GV_FELD.FEHL'),
+        'ALTER'  => array('s', -1, 86400, 'GV_FELD.ALTER', 'GV_KACHEL.ALTER'),
+        'FEHL'   => array('', -1, 9999,  'GV_FELD.FEHL',  'GV_KACHEL.FEHL'),
     );
 }
 
@@ -2631,48 +2677,55 @@ function gv_vorlage_lox($nummer = 1)
     $pfad = '/plugins/' . $p['plugin'] . '/index.php?token=' . gv_token()
           . '&aktion=%s&geraet=' . (int) $nummer;
     $name = $g['name'];
+    /* Der Zusatz macht die Titel dieser Datei von denen des unmittelbaren
+     * Ausgangs unterscheidbar. Beide Dateien darf ein Anwender einlesen -
+     * sie sind zwei Wege zur selben Leuchte -, und in der Bausteinsuche von
+     * Loxone Config fehlt der Geraeteknoten: zwei gleich benannte Bausteine
+     * sind dort nicht auseinanderzuhalten. Gemessen am 05.09.2026: 128
+     * Bausteine, 104 verschiedene Titel. Der SUCHTEXT bleibt unberuehrt. */
+    $lb_zusatz = ' ' . gv_klartext('GV_XML.LOX_UEBER');
     $cmds = array();
 
     $cmds[] = array(
-        'title'  => $name . ' - ' . gv_klartext('GV_XML.EINAUS'),
+        'title'  => $name . ' - ' . gv_klartext('GV_XML.EINAUS') . $lb_zusatz,
         'on'     => sprintf($pfad, 'ein'),
         'off'    => sprintf($pfad, 'aus'),
         'analog' => false,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.HELL'),
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.HELL') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_HELL_K'),
         'on'      => sprintf($pfad, 'hell') . '&wert=<v.0>',
         'analog'  => true,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.KELVIN'),
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.KELVIN') . $lb_zusatz,
         'comment' => sprintf(gv_klartext('GV_XML.KELVIN_K'), $g['kmin'], $g['kmax']),
         'on'      => sprintf($pfad, 'kelvin') . '&wert=<v.0>',
         'analog'  => true,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_FARBE'),
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_FARBE') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_FARBE_K'),
         'on'      => sprintf($pfad, 'farbe') . '&wert=<v.0>',
         'analog'  => true,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_SZENENR'),
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_SZENENR') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_SZENENR_K'),
         'on'      => sprintf($pfad, 'szene') . '&nr=<v.0>',
         'analog'  => true,
     );
     if ($g['pixel'] > 0) {
         $cmds[] = array(
-            'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_BALKEN'),
+            'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_BALKEN') . $lb_zusatz,
             'comment' => sprintf(gv_klartext('GV_XML.LOX_BALKEN_K'), $g['pixel']),
             'on'      => sprintf($pfad, 'balken') . '&wert=<v.0>',
             'analog'  => true,
         );
     }
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_ABRUF'),
+        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_ABRUF') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_ABRUF_K'),
         'on'      => sprintf($pfad, 'abruf'),
         'analog'  => false,
@@ -2717,7 +2770,7 @@ function gv_vorlage_eingang($nummer = 1)
              * sucht, findet keines und schliesst daraus das Falsche. Genau
              * das ist mir passiert; der Kommentar stand danach kurzzeitig
              * doppelt mit der Einheit da. */
-            'comment' => gv_klartext($info[3]),
+            'comment' => gv_klartext($info[4]),
             'einheit' => $info[0],
             /* Das Trennzeichen gehoert in den Suchtext. Loxone sucht woertlich
              * und nimmt den ERSTEN Treffer; ohne das Semikolon findet "R="
@@ -2767,8 +2820,12 @@ function gv_vorlage_eingang_alle()
     foreach ($geraete as $nr => $g) {
         foreach (gv_status_felder($g) as $feld => $info) {
             $cmds[] = array(
-                'title'   => 'GOVEE_' . (int) $nr . '_' . $feld,
-                'comment' => $g['name'] . ': ' . gv_klartext($info[3]),
+                /* Eigenes Praefix: die Einzeldateien tragen GOVEE_<nr>_<FELD>,
+                 * und das ist die bestehende Linie - sie behaelt ihre Namen.
+                 * Diese Datei ist eine Alternative dazu, aber wer beide
+                 * einliest, haette sonst zweimal denselben Titel. */
+                'title'   => 'GOVEE_ALLE_' . (int) $nr . '_' . $feld,
+                'comment' => $g['name'] . ': ' . gv_klartext($info[4]),
                 'einheit' => $info[0],
                 'check'   => '\i;G' . (int) $nr . '_' . $feld . '=\i\v',
                 'min'     => $info[1],
