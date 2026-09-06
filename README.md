@@ -7,6 +7,42 @@ Fassung 0.9.9 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
 
+## Neu in 0.9.14
+
+- **Der Reiter Test sagt jetzt, ob die MQTT-Veröffentlichung dieses Plugins
+  eingeschaltet ist.** Bis 0.9.13 stand dort nur der Zustand des MQTT-Gateways
+  von LoxBerry — das ist eine Aussage über den LoxBerry, nicht über dieses
+  Plugin. Wer die Veröffentlichung ausgeschaltet hatte, sah trotzdem einen
+  grünen Haken und konnte am Reiter nicht erkennen, dass nichts an den Broker
+  geht. Die neue Zeile steht vor der Gateway-Zeile und ist **grau**, wenn
+  ausgeschaltet — das ist eine Entscheidung, kein Fehler. Anlass: derselbe
+  Befund an BatterieBMS 0.9.17, dort am Gerät gemessen (`Regeln/04`).
+
+### Die Ausgabe des Dienstes ging in das Protokoll — und hielt es fest
+
+`bin/dienst.sh` hängte die Ausgabe des Dauerläufers mit
+`nohup php … >> "$LOGDATEI"` an dieselbe Datei, in die das Plugin sein
+Protokoll schreibt. Damit hält die Shell einen zweiten, anhängenden Deskriptor
+darauf, und zwar so lange der Dienst läuft. Verschwindet die Datei darunter —
+`log/plugins` liegt auf einer Ramdisk, und LoxBerrys `log_maint` räumt
+zusätzlich auf —, schreibt sie in einen gelöschten Inode: keine Fehlermeldung,
+keine Datei, kein Hinweis.
+
+Am Gerät gemessen (06.09.2026): der laufende Dienst hielt `govee.log` auf den
+Deskriptoren 1 und 2 offen, beide auf der gelöschten Datei. Sieben Dienste
+dieser Anlage taten das im selben Moment.
+
+Die Ausgabe geht jetzt in `govee_start.log`, das bei jedem Start geleert
+wird. Das Protokoll gehört allein dem Plugin — es öffnet die Datei je Zeile
+und schließt sie wieder, hält also nichts fest. **Am Programm selbst ist
+nichts geändert.** Das Muster ist von AnkerSolix übernommen, das es seit
+0.9.6 so macht.
+
+Im Sandkasten am Gerät geprüft, in beide Richtungen: mit dem alten Skript
+steht die Dienstausgabe im Protokoll und es gibt keine Startdatei, mit dem
+neuen ist es umgekehrt — Start, Startdatei, unberührtes Protokoll und Stopp,
+alle vier bestanden.
+
 ## Neu in 0.9.13
 
 - **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 0.9.12 kam er von der
