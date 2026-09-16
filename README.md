@@ -3,9 +3,53 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.9 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.16 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.16
+
+Zwei Berichtigungen an den Installationsskripten. Beide wirken erst beim
+**nächsten** Upgrade bzw. bei einer Deinstallation — am laufenden Plugin ändert
+sich nichts.
+
+### Nach einem Upgrade blieb der Dienst aus
+
+`postupgrade.sh` sollte den Dienst wieder starten, wenn er vor dem Upgrade lief,
+und suchte dafür den Merker `soll_laufen` **im** Datenordner
+`data/plugins/govee/`. Genau diesen Ordner räumt der LoxBerry-Installer
+zwischen `preupgrade.sh` und `postupgrade.sh` restlos ab. Der Merker war also
+nie zu finden: **ein laufender Govee-Dienst blieb nach jedem Upgrade aus**, und
+das Installationsprotokoll meldete dazu „Der Dienst lief vor dem Upgrade nicht
+und bleibt angehalten".
+
+Am Gerät gesehen: nach dem Upgrade auf 0.9.15 lief Govee neun Tage nicht, und
+Loxone bekam in dieser Zeit keine Werte.
+
+`preupgrade.sh` schreibt den Merker jetzt **neben** den Ordner
+(`data/plugins/govee.soll_laufen`, mit Zeitpunkt), `postupgrade.sh` liest ihn
+dort, nimmt ihn nur, wenn er höchstens eine Stunde alt ist, und räumt ihn weg.
+
+Das gilt schon für das Upgrade **auf** 0.9.16: der Installer führt
+`preupgrade.sh` und `postupgrade.sh` aus dem **neuen** Archiv aus. Ein Dienst,
+der unter 0.9.15 lief, läuft danach weiter.
+
+### Die Deinstallation räumte nicht auf
+
+Der Installer legt das Deinstallationsskript unter
+`data/system/uninstall/govee` ab und übergibt ihm Ordnernamen und
+LoxBerry-Wurzel als Argumente. Das Skript leitete den Ordnernamen aber aus
+seinem eigenen Ablageort ab — und kam dort auf `system` statt `govee`. Folge:
+der Dienst wurde nicht angehalten, und die Sicherungen neben dem
+Konfigurationsordner blieben liegen (`govee.backup.json`, bei Cloud-Nutzung
+auch `govee.backup.geheim.json` mit dem API-Schlüssel). Ordnername und Wurzel
+kommen jetzt aus den Argumenten.
+
+### Zeilenenden
+
+`plugin.cfg`, `release.cfg`, `prerelease.cfg` und
+`webfrontend/htmlauth/index.php` führen jetzt LF wie alle anderen Dateien.
+Am Inhalt ist nichts geändert.
 
 ## Neu in 0.9.14
 

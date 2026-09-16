@@ -7,12 +7,24 @@
 # enthielt so eine Datei die MAC-Adressen und Namen aller ueberwachten
 # Personen. Hier stehen zwar nur IP-Adressen und Geraetekennungen drin, aber
 # es gibt keinen Grund, sie liegen zu lassen.
+#
+# Aufruf durch den Installer: data/system/uninstall/<name>
+#   <TEMPFILE> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
+# Ordner und Wurzel kommen deshalb aus $3 und $5. Bis 0.9.15 wurde der Ordner
+# aus dem eigenen Ablageort abgeleitet - installiert ist das data/system, der
+# Ordnername wurde "system" (am Geraet so errechnet, 17.09.2026). Der Dienst
+# wurde dann nicht angehalten, und die Sicherungen unten blieben liegen.
 SELF=$(cd "$(dirname "$0")" && pwd)
-PFOLDER=$(basename "$(cd "$SELF/.." && pwd)")
-BASE=${LBHOMEDIR:-$(cd "$SELF/../../.." 2>/dev/null && pwd)}
+ARGV3=$3
+ARGV5=$5
+PFOLDER="${ARGV3:-govee}"
+BASE="${ARGV5:-$LBHOMEDIR}"
+if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
+    BASE=$(cd "$SELF/../../.." 2>/dev/null && pwd)
+fi
 
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
-[ -x "$DIENST" ] && "$DIENST" stop >/dev/null 2>&1
+[ -f "$DIENST" ] && /bin/bash "$DIENST" stop >/dev/null 2>&1
 
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 if [ -f "$PID" ]; then
@@ -33,6 +45,7 @@ rm -f "$BASE/config/plugins/$PFOLDER.backup.geheim.json"
 # Sicherheit trotzdem ausdruecklich loeschen, falls der Ordner stehen bleibt.
 rm -f "$BASE/config/plugins/$PFOLDER/geheim.json"
 rm -rf "$BASE/data/plugins/$PFOLDER"
+rm -f "$BASE/data/plugins/$PFOLDER.soll_laufen"
 
 echo "<OK> Govee-Plugin entfernt, Sicherungsdatei und Cloud-Schluessel geloescht."
 exit 0

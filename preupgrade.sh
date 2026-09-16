@@ -18,6 +18,24 @@ ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 
+# Ob der Dienst nach dem Upgrade wieder anlaufen soll, muss HIER festgehalten
+# werden - vor dem Aufraeumen des Installers - und NEBEN dem Datenordner.
+# Zwischen preupgrade und postinstall loescht purge_installation
+# data/plugins/<ordner>/ restlos (Regeln/06). Bis 0.9.15 las postupgrade.sh
+# den Merker soll_laufen IN diesem Ordner: er war dort nie mehr zu finden, ein
+# laufender Dienst blieb nach jedem Upgrade aus, und das Protokoll sagte "lief
+# vor dem Upgrade nicht". Am Geraet so gesehen: nach dem Upgrade auf 0.9.15
+# (08.09.2026) lief Govee neun Tage nicht. Im Merker steht der Zeitpunkt;
+# postupgrade.sh nimmt ihn nur, wenn er hoechstens eine Stunde alt ist - der
+# Rest eines abgebrochenen Upgrades soll keine spaetere Neuinstallation
+# starten.
+MERKER="$BASE/data/plugins/$PFOLDER.soll_laufen"
+rm -f "$MERKER"
+if [ -f "$BASE/data/plugins/$PFOLDER/soll_laufen" ]; then
+    date +%s > "$MERKER" 2>/dev/null \
+        && echo "<INFO> Der Dienst soll laufen - Merker fuer postupgrade gesetzt."
+fi
+
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 if [ -f "$PID" ]; then
     kill "$(cat "$PID")" 2>/dev/null || true
