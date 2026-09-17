@@ -3,9 +3,22 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.16 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.17 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.17
+
+- **PHP-Fehler des laufenden Dienstes gehen ins Protokoll.** Bisher schrieb der
+  Dienst Warnungen und Absturzgründe auf seine Fehlerausgabe. Die zeigt auf eine
+  Datei, die die Protokollwartung von LoxBerry löschen kann — danach gingen die
+  Meldungen ungelesen verloren (am Gerät gemessen an BatterieBMS, 17.09.2026).
+  Jetzt stehen sie im Protokoll des Plugins.
+
+- **Tabellen mit Eingabefeldern rollen seitlich, statt über den Rand zu ragen.**
+  Die Geräteliste war am Gerät 1 323 px breit in einem 980 px breiten Bereich;
+  was darüber hinausging, hing davon ab, wie breit das Fenster ist. Die Tabellen
+  stehen jetzt im Rollbehälter der Hausform.
 
 ## Neu in 0.9.16
 

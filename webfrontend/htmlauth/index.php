@@ -657,6 +657,11 @@ if ($gv_rahmen) {
 .sm-tbl { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 0.9em; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ccc; padding: 5px 7px; text-align: left; vertical-align: top; }
 .sm-tbl th { background: #eef3e6; font-weight: 600; }
+/* Wortgetreu aus VORLAGE_hausstandard.css.html (B54, 17.09.2026): jede Tabelle
+   mit Eingabefeldern kommt in .sm-breit. lb-content schneidet seitlich ab; an
+   BatterieBMS waren so zwei Spalten im Browser nicht erreichbar. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 .sm-mono { font-family: Consolas, "Courier New", monospace; background: #f0f0f0;
     padding: 1px 4px; border-radius: 3px; font-size: 0.94em; word-break: break-all; }
 .sm-pre { background: #f4f4f4; border: 1px solid #ccc; padding: 10px; font-size: 0.85em;
@@ -875,6 +880,7 @@ if ($gv_rahmen) {
 
 <h2><?= gv_e(gv_t('EINST.H_GERAETE')) ?></h2>
 <div class="sm-hinweis"><?= gv_t('EINST.GERAETE_ERKLAERUNG') ?></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:28px;">#</th><th style="width:44px;"><?= gv_e(gv_t('EINST.T_NR')) ?></th>
     <th><?= gv_e(gv_t('EINST.T_NAME')) ?></th>
@@ -913,10 +919,12 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 </tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-hilfe"><?= gv_t('EINST.GERAETE_HILFE') ?></div>
 
 <h2><?= gv_e(gv_t('EINST.H_SZENEN')) ?></h2>
 <div class="sm-hinweis"><?= gv_t('EINST.SZENEN_ERKLAERUNG') ?></div>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:28px;">#</th><th style="width:24%;"><?= gv_e(gv_t('EINST.T_SZENE_NAME')) ?></th>
     <th style="width:70px;"><?= gv_e(gv_t('EINST.T_SKU')) ?></th>
@@ -938,6 +946,7 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 </tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-hilfe"><?= gv_t('EINST.SZENEN_HILFE') ?></div>
 
 <h2><?= gv_e(gv_t('EINST.H_TAKT')) ?></h2>

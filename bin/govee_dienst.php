@@ -83,6 +83,22 @@ foreach (array_slice($argv, 1) as $gv_arg) {
 
 $gv_einmal = in_array('--einmal', $argv, true);
 $gv_p = gv_paths();
+/* PHP-Fehler des laufenden Dienstes gehoeren ins Protokoll (B48, 17.09.2026).
+ *
+ * dienst.sh startet mit 'nohup php ... >> <datei> 2>&1'; den Deskriptor haelt
+ * die SCHALE. Loescht log_maint.pl die Datei (RAM-Scheibe, Regeln/06), zeigen
+ * stdout und stderr auf einen geloeschten Inode. PHP-CLI am Geraet schreibt
+ * Laufzeitfehler mit display_errors = stderr, log_errors = 1 und leerem
+ * error_log genau dorthin - Warnungen und Absturzgruende gingen verloren.
+ * Am Geraet gemessen an BatterieBMS (17.09.2026: fd 1/2 '(deleted)'), die
+ * Abhilfe dort im Wegwerfbaum in beide Richtungen geeicht (Regeln/03, 'Die
+ * dritte Protokollart'). error_log auf die Protokolldatei oeffnet sie je
+ * Meldung neu und legt sie an, wenn sie fehlt - wie gv_log(). Die
+ * Kommandozeilenzweige darueber bleiben bei stdout. */
+ini_set('log_errors', '1');
+ini_set('display_errors', '0');
+ini_set('error_log', $gv_p['log']);
+
 @mkdir($gv_p['datadir'] . '/befehle', 0775, true);
 @mkdir($gv_p['datadir'] . '/antworten', 0775, true);
 
