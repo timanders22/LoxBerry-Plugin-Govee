@@ -3,9 +3,82 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.19 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.20 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.20
+
+- **`bin/dienst.sh` liest die LoxBerry-Wurzel, statt sie zu raten.** Bis 0.9.19
+  leitete das Skript Wurzel **und** Ordnernamen allein aus dem eigenen
+  Ablageort ab (`LBHOMEDIR=$(cd "$SELF/../../.." && pwd)`), überschrieb damit
+  ein gesetztes `$LBHOMEDIR` und legte den so errechneten Daten- und
+  Protokollordner bei **jedem** Aufruf an, auch bei `status`. In WSL gemessen
+  (18.09.2026): ein `dienst.sh status` aus einem Prüfarchiv unter
+  `<LoxBerry-Wurzel>/pruefung/govee/bin` legte in der laufenden Installation
+  `data/plugins/bin` und `log/plugins/bin` an, und nach dem Abräumen des
+  Datenordners durch den Installer legte schon ein `status` ihn wieder an.
+  Jetzt gilt: die Wurzel kommt aus `$LBHOMEDIR` (am Gerät aus
+  `/etc/environment`), wenn es `config/plugins` und `data/plugins` trägt,
+  sonst aus der Suche aufwärts nach `config/plugins`, `data/plugins` und
+  `config/system/general.json`; der Ordnername aus `$LBPPLUGINDIR`, sonst aus
+  dem Ablageort. Findet sich keine Wurzel, meldet `dienst.sh` das mit
+  `FEHLER`-Zeilen und Rückgabe 1 (`status`: 4) und legt nichts an, startet
+  nichts und hält nichts an; der Wächter bleibt still. Eine Rechnung „drei
+  Ebenen über dem Ablageort" gibt es nicht mehr — in einem fremden Baum ohne
+  `general.json` wirkten `start`, `stop` und der Wächter sonst dort (in WSL
+  gemessen). Angelegt wird nur noch beim
+  Start — auch im minütlichen Wächter, bevor er in die Startdatei schreibt,
+  denn `log/plugins` liegt auf einer Ramdisk. Ruft man `dienst.sh` aus einem
+  ausgepackten Archiv oder einem Prüfordner auf, ohne dass der Ordnername
+  unter der Wurzel ein eingerichtetes Plugin ist, bricht es mit einer Meldung
+  ab und legt nichts an; `selbsttest` bleibt davon ausgenommen. Mit gesetztem
+  `LBHOMEDIR` und `LBPPLUGINDIR` wirkt es auf den Dienst der Installation. Am
+  Gerät (Wurzel aus `/etc/environment`, Aufruf aus `cd /`) ändert sich nichts
+  — nachgestellt mit und ohne `LBHOMEDIR` und über einen Verweis auf die
+  Wurzel, nicht am Gerät gemessen.
+
+- **Die Bibliothek greift ohne Wurzel nicht mehr in einen fremden Baum.**
+  Fehlte `$LBHOMEDIR` oder zeigte es auf kein Verzeichnis, suchte
+  `gv_lib.php` die Wurzel aufwärts nach `config/plugins` und `webfrontend`
+  und fiel danach auf den festen Pfad `/home/loxberry/loxberry` zurück; ein
+  ungültiges `LBHOMEDIR` blieb als Wurzel stehen. Unter diesem Pfad liegt auf
+  einem LoxBerry keine Wurzel — der feste Pfad traf also nie die eigene
+  Anlage. In WSL gemessen (18.09.2026): aus einem ausgepackten Archiv
+  heraus las die Bibliothek die Konfiguration eines Baums unter
+  `/home/loxberry/loxberry` bzw. eines Prüfstand-Rests ohne
+  `config/system/general.json`, schrieb dort aus dessen Zweitschrift eine
+  `govee.json` und lud dessen Sprachdatei. Jetzt verlangt die Suche auch
+  `config/system/general.json`, der feste Pfad ist fort, und ohne Treffer
+  arbeitet die Bibliothek im Archivmodus auf dem eigenen Ordner. Eine
+  installierte Oberfläche findet ihre Wurzel wie bisher — auf einem LoxBerry
+  liegt `general.json` immer.
+
+- **Nach einem Upgrade startet der Dienst wieder, auch wenn die Uhr ein Stück
+  zurückspringt.** `postupgrade.sh` startet den Dienst nur, wenn der Merker
+  aus `preupgrade.sh` („der Dienst lief") höchstens eine Stunde alt ist. Bis
+  0.9.19 galt ein Merker mit einem Zeitpunkt nach der aktuellen Uhrzeit nicht
+  — in WSL sprang die Uhr gemessen um 2 s zurück, und der Dienst blieb nach
+  dem Upgrade aus. Jetzt gilt derselbe Vorlauf von 300 s wie bei der Marke.
+  Die Uhrzeit wird vor der Rechnung als Zahl geprüft; ist sie nicht lesbar,
+  gilt der Merker trotzdem (mit Warnung im Installationsprotokoll), denn
+  `preupgrade.sh` legt ihn in jedem Upgrade frisch an — ein Dienst, der lief,
+  soll nicht wegen einer unlesbaren Uhr ausbleiben.
+
+- **Die Upgrade-Marke duldet 300 Sekunden „aus der Zukunft".** Bis 0.9.19 galt
+  eine Marke mit einem Zeitpunkt nach der aktuellen Uhrzeit nicht. Springt die
+  Uhr nach dem Setzen der Marke ein Stück zurück, fiel die Sperre damit kurz
+  aus — in WSL sprang die Uhr gemessen bis 0,64 s zurück, bei VolkswagenID
+  0.9.23 fiel die Marke deshalb in 2 von 26 Eichläufen kurz aus. Hier
+  gemessen: eine Marke 2 s oder 120 s voraus ließ den Start zu. Die Grenze
+  steht gleich in `bin/dienst.sh` und in der Zeile „Läuft gerade eine
+  Aktualisierung dieses Plugins?" des Reiters Test; das angezeigte Alter ist
+  dann 0 statt negativ.
+
+  Prüfstände und Messprotokolle: `Pruefung-Govee-0.9.20/` — `messe_h1.sh`
+  (52 Fälle), `messe_h2.sh` (15 Fälle) und `messe_merker.sh` (13 Fälle); jeder
+  Befund vor seiner Behebung rot gemessen, danach grün; jede Korrektur einzeln
+  zurückgebaut und geeicht (22 Rückbauten).
 
 ## Neu in 0.9.19
 

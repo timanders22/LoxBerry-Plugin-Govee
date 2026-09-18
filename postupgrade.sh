@@ -44,13 +44,37 @@ SOLL=0
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 gv_marke_weg() { rm -f "$MARKE"; }
 trap gv_marke_weg EXIT
+# Der Merker gilt, wenn er hoechstens 3600 s alt ist - und bis 300 s "aus der
+# Zukunft", wie die Marke in bin/dienst.sh: die Uhr kann zwischen
+# preupgrade.sh und hier ein Stueck zurueckspringen. Bis 0.9.19 galt jede
+# Sekunde Zukunft als "nicht", und der Dienst blieb nach dem Upgrade aus; in
+# WSL sprang die Uhr gemessen um 2 s zurueck, und zwei von vier Laeufen des
+# Pruefstands 0.9.19 meldeten deshalb "lief vor dem Upgrade nicht"
+# (Pruefung-Govee-0.9.20, Faelle M2/M3).
+#
+# Beide Zahlen werden VOR der Rechnung als Zahl geprueft: bash wertet in
+# $(( )) den INHALT einer Variablen aus (Klasse M) - ein date, das statt einer
+# Zahl etwas wie a[$(befehl)] liefert, fuehrte den Befehl aus (Fall M8b).
+#
+# Ohne lesbare Uhr gilt der Merker (Fall M7). Das ist hier die sichere Seite,
+# anders als bei der Marke: preupgrade.sh loescht einen alten Merker als
+# Erstes und legt ihn nur an, wenn soll_laufen lag, und uninstall raeumt ihn
+# weg - ein Merker, den dieses Skript findet, stammt aus DIESEM Upgrade. Fiele
+# die Pruefung geschlossen aus, bliebe ein Dienst, der lief, nach dem Upgrade
+# aus (so am Geraet nach 0.9.15: neun Tage). Ein Merker ohne Zahl gilt weiter
+# nicht - dann ist nicht zu sagen, woher er stammt (Fall M6).
 if [ -f "$MERKER" ]; then
     T=$(cat "$MERKER" 2>/dev/null)
-    JETZT=$(date +%s)
+    JETZT=$(date +%s 2>/dev/null)
     case "$T" in
         ''|*[!0-9]*) ;;
-        *) ALTER=$((JETZT - T))
-           [ "$ALTER" -ge 0 ] && [ "$ALTER" -le 3600 ] && SOLL=1 ;;
+        *) case "$JETZT" in
+               ''|*[!0-9]*)
+                   echo "<WARNING> Die Uhr ist nicht lesbar - der Merker aus diesem Upgrade gilt trotzdem."
+                   SOLL=1 ;;
+               *) ALTER=$((JETZT - T))
+                  [ "$ALTER" -ge -300 ] && [ "$ALTER" -le 3600 ] && SOLL=1 ;;
+           esac ;;
     esac
     rm -f "$MERKER"
 fi

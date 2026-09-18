@@ -79,11 +79,19 @@ define('GV_CLOUD', 'https://openapi.api.govee.com');
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, webfrontend UND config/system/general.json enthaelt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * general.json ist die dritte Bedingung seit dem Raumklima-Vorfall
+ * (Regeln/06): ein Rest aus Pruefstaenden traegt config/plugins und
+ * webfrontend, eine LoxBerry-Wurzel traegt immer auch general.json. Bis 0.9.19
+ * fehlte sie hier; in WSL gemessen (Pruefung-Govee-0.9.20, messe_h2.sh, Faelle
+ * C1 bis C4): aus einem Archiv unter einem solchen Rest las die Bibliothek
+ * dessen Konfiguration, schrieb dort aus der Zweitschrift eine govee.json und
+ * lud dessen Sprachdatei.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -93,7 +101,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -112,12 +121,19 @@ function gv_paths()
     }
     $home = getenv('LBHOMEDIR');
     if (!$home || !is_dir($home)) {
-        foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-            if (is_dir($k)) {
-                $home = $k;
-                break;
-            }
-        }
+        /* Ohne brauchbares LBHOMEDIR nur noch die Suche; findet sie nichts,
+         * gibt es KEINE Wurzel (home leer, Archivmodus weiter unten).
+         *
+         * Bis 0.9.19 folgte hier der feste Pfad '/home/loxberry/loxberry', und
+         * ein ungueltiges LBHOMEDIR blieb als Wurzel stehen. Unter diesem Pfad
+         * liegt auf einem LoxBerry keine Wurzel (Regeln/06, Wurzel und ihr
+         * Verweis) - der feste Pfad traf also nie die eigene Anlage, nur nichts
+         * oder einen fremden Baum. In WSL gemessen (Pruefung-Govee-0.9.20, messe_h2.sh, Faelle B1
+         * bis B5): aus einem ausgepackten Archiv ohne LBHOMEDIR las die
+         * Bibliothek die Konfiguration eines Baums unter
+         * /home/loxberry/loxberry und schrieb dort aus dessen Zweitschrift eine
+         * govee.json. */
+        $home = lb_wurzel_ermitteln();
     }
     /* Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
      * MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
@@ -801,9 +817,14 @@ function gv_dienst_soll()
  * Aktualisierung - im Reiter Test steht zu jedem Fall ein eigener Satz.
  *
  * Die Datei liegt NEBEN dem Datenordner (data/plugins/<ordner>.upgrade_laeuft),
- * weil purge_installation den Ordner beim Upgrade abraeumt. Die Grenze 3600 s
- * ist dieselbe wie in bin/dienst.sh, marke_sperrt(); wer eine der beiden
- * aendert, aendert beide.
+ * weil purge_installation den Ordner beim Upgrade abraeumt. Die Grenzen - 3600 s
+ * Alter und 300 s Vorlauf "aus der Zukunft" - sind dieselben wie in
+ * bin/dienst.sh, marke_sperrt(); wer eine der beiden aendert, aendert beide.
+ * Der Vorlauf ist gemessen, nicht geschaetzt: die Uhr kann nach dem Setzen
+ * der Marke ein Stueck zurueckspringen (in WSL bis 0,64 s), und mit "keine
+ * Sekunde Zukunft" fiel die Marke dann kurz aus (Pruefung-Govee-0.9.20,
+ * Faelle P1/P2; bei VolkswagenID in 2 von 26 Eichlaeufen). Das angezeigte
+ * Alter ist in diesem Fall 0, nicht negativ.
  *
  * ctype_digit waere hier falsch: ctype ist eine Erweiterung, die nicht
  * garantiert geladen ist (Regeln/02). Deshalb preg_match.
@@ -823,10 +844,10 @@ function gv_upgrade_marke()
         return array(1, 0, -1);
     }
     $alter = time() - (int) $roh;
-    if ($alter < 0 || $alter > 3600) {
+    if ($alter < -300 || $alter > 3600) {
         return array(1, 0, $alter);
     }
-    return array(1, 1, $alter);
+    return array(1, 1, max(0, $alter));
 }
 
 /** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
@@ -2941,12 +2962,10 @@ function gv_t($schluessel)
     if ($texte === null) {
         $home = getenv('LBHOMEDIR');
         if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) {
-                    $home = $k;
-                    break;
-                }
-            }
+            /* Wie in gv_paths(): ohne festen Pfad dahinter (bis 0.9.19
+             * '/home/loxberry/loxberry' - lud die Sprachdatei eines fremden
+             * Baums, Fall B4 in Pruefung-Govee-0.9.20/messe_h2.sh). */
+            $home = lb_wurzel_ermitteln();
         }
         $ordner = basename(dirname(__FILE__));
         $pfad = $home . '/templates/plugins/' . $ordner . '/lang';

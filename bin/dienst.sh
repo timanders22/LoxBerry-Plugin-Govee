@@ -43,8 +43,101 @@ if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
 fi
 
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)          # <home>/bin/plugins/<ordner>
-PNAME=$(basename "$SELF")
-LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+
+# ---------- Wurzel und Ordnername: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.19 stand hier
+#     PNAME=$(basename "$SELF")
+#     LBHOMEDIR=$(cd "$SELF/../../.." && pwd)
+# und weiter unten ein 'mkdir -p' auf oberster Ebene. Ein gesetztes
+# $LBHOMEDIR wurde damit UEBERSCHRIEBEN, der Ordnername kam allein aus dem
+# Ablageort, und der geratene Pfad wurde bei JEDEM Aufruf angelegt - auch bei
+# 'status'. In WSL gemessen (18.09.2026, Pruefung-Govee-0.9.20, Faelle H1 bis
+# H11; Bauart H1 aus Bestand-2026-09-18/klasse-H): 'dienst.sh status' aus einem
+# Pruefarchiv unter <Wurzel>/pruefung/govee/bin legte in der LAUFENDEN
+# Installation data/plugins/bin und log/plugins/bin an, und nach einem
+# purge_installation legte schon ein 'status' den Datenordner wieder an.
+#
+# Zwei Stufen (Regeln/03, Regeln/06; Vorbild Heimkino 1.3.13, ohne Wurzel
+# wie ZendureSolarFlow 0.9.24):
+#   1. $LBHOMEDIR aus der Umgebung, wenn es config/plugins und data/plugins
+#      traegt - am Geraet steht es in /etc/environment, der Cron liest es
+#      ueber pam_env;
+#   2. aufwaerts suchen, bis ein Verzeichnis config/plugins, data/plugins UND
+#      config/system/general.json traegt (die dritte Bedingung seit dem
+#      Raumklima-Vorfall, Regeln/06; Fall H9).
+# Findet keine etwas, bricht das Skript ab, BEVOR es etwas anlegt, startet
+# oder anhaelt (Regeln/06: ohne brauchbare Wurzel warnen statt vollziehen).
+# Eine dritte Stufe "drei Ebenen ueber dem Ablageort" stand im Bau von 0.9.20
+# noch hier: in einem fremden Baum ohne general.json (<X>/bin/plugins/govee,
+# kein LBHOMEDIR) war <X> dann die Wurzel, und start, stop und Waechter
+# wirkten dort - in WSL gemessen (Pruefung-Govee-0.9.20, Faelle F1-F4).
+# 'pwd -P': ist die Wurzel ein Verweis auf ein anderes Verzeichnis, zaehlt der
+# aufgeloeste Pfad. So steht er in der Befehlszeile des Dienstes, denn SELF ist
+# ueber readlink -f ebenfalls aufgeloest (Faelle G4 und G7).
+gv_wurzel_suchen() {
+    gv_v="$SELF"
+    gv_i=0
+    while [ -n "$gv_v" ] && [ "$gv_v" != "/" ] && [ "$gv_i" -lt 8 ]; do
+        if [ -d "$gv_v/config/plugins" ] && [ -d "$gv_v/data/plugins" ] \
+           && [ -f "$gv_v/config/system/general.json" ]; then
+            echo "$gv_v"
+            return 0
+        fi
+        gv_v=$(dirname "$gv_v")
+        gv_i=$((gv_i + 1))
+    done
+    return 1
+}
+if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
+   && [ -d "$LBHOMEDIR/data/plugins" ]; then
+    LBHOMEDIR=$(cd "$LBHOMEDIR" && pwd -P)
+else
+    LBHOMEDIR=$(gv_wurzel_suchen) || LBHOMEDIR=""
+fi
+# Ohne Wurzel: nichts anlegen, nichts starten, nichts anhalten. "status"
+# antwortet mit 4 ("Zustand unbekannt"), damit es sich von 1 ("gestoppt")
+# unterscheidet; alles andere mit 1. Die Meldung geht nur auf die Ausgabe -
+# ohne Wurzel gibt es keine Protokolldatei, und der Cron-Waechter leitet
+# seine Ausgabe nach /dev/null (Fall F4). 'selbsttest' ist ausgenommen: er
+# prueft nur die Datei neben diesem Skript (Fall H11).
+if [ -z "$LBHOMEDIR" ] && [ "$1" != "selbsttest" ]; then
+    echo "FEHLER: Es wurde kein LoxBerry-Wurzelverzeichnis gefunden."
+    echo "FEHLER: \$LBHOMEDIR ist nicht gesetzt, und oberhalb von $SELF traegt"
+    echo "FEHLER: kein Verzeichnis config/plugins, data/plugins und config/system/general.json."
+    echo "FEHLER: Es wurde nichts angelegt, nichts gestartet und nichts angehalten."
+    [ "$1" = "status" ] && exit 4
+    exit 1
+fi
+# Der Ordnername kommt aus $LBPPLUGINDIR, sonst aus dem Ablageort. Am Geraet
+# steht $LBPPLUGINDIR in keiner Cron-Schale (Regeln/03, 43 Linien) - dann
+# traegt der Ablageort, und bei einer regulaeren Installation ist das richtig.
+PNAME="${LBPPLUGINDIR:-}"
+PNAME="${PNAME%/}"
+PNAME="${PNAME##*/}"
+[ -n "$PNAME" ] || PNAME=$(basename "$SELF")
+PBIN="$LBHOMEDIR/bin/plugins/$PNAME"
+
+# Die Gegenprobe steht VOR allem, was schreibt (Vorbild Dashboard 0.9.22):
+# liegt dieses Skript nicht im bin-Ordner der Anlage, und ist <ordner> dort
+# auch kein eingerichtetes Plugin, dann kommt der Aufruf aus einem
+# ausgepackten Archiv oder einem Pruefordner - es wird nichts angelegt und
+# nichts angefasst (Faelle H1, H4, H5, H8, H10 - auch 'stop' mit nur gesetztem
+# LBHOMEDIR sagt ab, statt "laeuft nicht" zu melden). 'selbsttest' ist
+# ausgenommen (Fall H11): er prueft das Skript neben dieser Datei und braucht
+# die Anlage nicht.
+if [ "$1" != "selbsttest" ] \
+   && [ "$SELF" != "$(readlink -f "$PBIN" 2>/dev/null)" ] \
+   && [ ! -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
+    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin,"
+    echo "        und $SELF ist nicht dessen bin-Ordner."
+    echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
+    echo "        einem Pruefordner. Es wurde nichts angelegt."
+    echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
+    echo "        aus <LoxBerry-Wurzel>/bin/plugins/<ordner> aufrufen."
+    exit 1
+fi
+
 PDATA="$LBHOMEDIR/data/plugins/$PNAME"
 PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
@@ -69,13 +162,27 @@ LOGDATEI="$PLOG/govee.log"
 # den Deskriptoren 1 und 2 offen, beide auf der geloeschten Datei.
 # Regel: genau einer schreibt in eine Protokolldatei.
 STARTLOG="$PLOG/govee_start.log"
-SKRIPT="$SELF/govee_dienst.php"
+# Das Dienstskript DER ANLAGE, nicht das neben dieser Datei. Sonst verwaltete
+# ein dienst.sh aus einem ausgepackten Archiv den Dienst des Archivs, waehrend
+# der Aufrufer mit LBHOMEDIR/LBPPLUGINDIR die Anlage meinte: 'status' meldete
+# "gestoppt", obwohl ihr Dienst lief, und 'stop' nahm ihr soll_laufen weg,
+# ohne den Dienst zu beenden (Faelle H2, H3). Installiert ist PBIN derselbe
+# Ordner wie SELF (Gegenprobe oben).
+SKRIPT="$PBIN/govee_dienst.php"
 # Der Dienst laeuft als loxberry (siehe den Abstieg oben); wo es den Benutzer
 # nicht gibt, als der eigene. Gebraucht fuer die Suche nach Diensten ohne
 # PID-Datei: ohne Benutzerfilter liefe sie ueber fremde Prozesse.
 DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
 
-mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+# Angelegt wird erst beim START - in starten() und im Waechter, bevor er in
+# die Startdatei umlenkt -, nicht bei jedem Aufruf. Bis 0.9.19 stand dieses
+# mkdir auf oberster Ebene (siehe den Kopf dieser Datei, Faelle H4, H6, H7).
+# Der Waechter braucht es trotzdem: log/plugins ist eine Ramdisk; fehlt der
+# Ordner nach einem Neustart, scheiterte die Umlenkung, und starten() liefe
+# gar nicht erst (Fall G8).
+ordner_anlegen() {
+    mkdir -p "$PDATA" "$PLOG" 2>/dev/null
+}
 
 laeuft() {
     [ -f "$PID" ] || return 1
@@ -151,10 +258,10 @@ waisen_beenden() {
 #
 # Vier Ausgaenge, alle gemessen:
 #   Marke juenger als 3600 s  -> gesperrt (Fall C1)
-#   Marke aelter, aus der Zukunft, leer oder unlesbar -> sie gilt nicht
-#                                (Faelle C2 bis C5; eine abgebrochene
-#                                Installation darf den Dienst nicht fuer
-#                                immer stilllegen)
+#   Marke aelter, mehr als 300 s aus der Zukunft, leer oder unlesbar
+#                             -> sie gilt nicht (Faelle C2 bis C5; eine
+#                                abgebrochene Installation darf den Dienst
+#                                nicht fuer immer stilllegen)
 #   keine lesbare Uhr         -> die Pruefung faellt GESCHLOSSEN aus
 #                                (CLAUDE.md 4; Fall C6)
 #   GV_START_TROTZ_MARKE=1    -> Ausnahme fuer das letzte Hakenskript
@@ -173,7 +280,16 @@ marke_sperrt() {
     SEIT=$(cat "$MARKE" 2>/dev/null)
     case "$SEIT" in ''|*[!0-9]*) return 1 ;; esac
     ALTER=$((JETZT - SEIT))
-    [ "$ALTER" -lt 0 ] && return 1
+    # Bis 300 s "aus der Zukunft" gilt die Marke noch: die Uhr kann ein Stueck
+    # zurueckspringen, nachdem preupgrade.sh sie gesetzt hat. Bis 0.9.19 galt
+    # "jede Sekunde Zukunft gilt nicht". In WSL sprang die Wanduhr gemessen bis
+    # 0,64 s zurueck, und bei VolkswagenID fiel die Marke mit der strengen Regel
+    # in 2 von 26 Eichlaeufen fuer einen Augenblick aus
+    # (Pruefung-VolkswagenID-0.9.23/messprotokoll_uhr.txt). Hier gemessen
+    # (Pruefung-Govee-0.9.20, Faelle V1/V2): eine Marke 2 s bzw. 120 s voraus
+    # liess den Start zu. Dieselbe Grenze steht in gv_upgrade_marke()
+    # (webfrontend/html/gv_lib.php). Weiter voraus: sie gilt nicht (Fall V3).
+    [ "$ALTER" -lt -300 ] && return 1
     [ "$ALTER" -le 3600 ]
 }
 
@@ -203,6 +319,7 @@ starten() {
         echo "FEHLER: Konfiguration fehlt ($PCONFIG/govee.json). Erst die Oberflaeche oeffnen."
         return 1
     fi
+    ordner_anlegen
     touch "$SOLL"
     # Die Ausgabe des Dienstes geht in die Startdatei, NICHT in das Protokoll:
     # dort schreibt allein das Programm selbst. Beim Start gekappt, damit sie
@@ -274,13 +391,16 @@ case "$1" in
         exit 1
         ;;
     selbsttest)
-        php "$SKRIPT" --selbsttest
+        # Das Skript NEBEN dieser Datei, wie bis 0.9.19 - der Selbsttest prueft
+        # die ausgelieferte Datei, auch aus einem ausgepackten Archiv.
+        php "$SELF/govee_dienst.php" --selbsttest
         exit $?
         ;;
     waechter)
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
         if [ -f "$SOLL" ] && ! laeuft; then
+            ordner_anlegen
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
             starten >> "$STARTLOG" 2>&1
         fi
