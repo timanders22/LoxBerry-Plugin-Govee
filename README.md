@@ -3,9 +3,41 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.17 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.18 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.18
+
+- **Beendet wird nur noch der eigene Dienst — geprüft vor jedem Signal.**
+  `preupgrade.sh` schickte `kill` und zwei Sekunden später `kill -9` an die
+  Zahl, die in `data/plugins/govee/dienst.pid` stand, ohne nachzusehen, wem sie
+  gehört. Prozessnummern werden aber wiederverwendet: liegt eine alte PID-Datei
+  herum und trägt ihre Zahl inzwischen einen fremden Vorgang, traf das Signal
+  genau den. In WSL gemessen (18.09.2026): ein `sleep 600`, dessen Nummer in
+  der Datei stand, war nach dem Upgrade tot — und das Protokoll meldete dazu
+  „Laufender Dienst angehalten - er haelt den UDP-Port 4002." Dieselbe Bauart
+  stand in `uninstall/uninstall`. Geprüft werden jetzt drei Dinge, und zwar vor
+  **jedem** Signal: das erste Argument ist ein PHP, das zweite ist genau
+  `bin/plugins/govee/govee_dienst.php` mit vollem Pfad, und der Prozess gehört
+  dem Dienstbenutzer. Gehört die Nummer einem fremden Vorgang, wird nichts
+  beendet und das ausdrücklich gemeldet.
+
+- **Ein Dienst ohne PID-Datei wird gefunden und beendet.** Die PID-Datei liegt
+  im Datenordner, und den löscht der Installer beim Upgrade zwischen
+  `preupgrade.sh` und `postinstall.sh` restlos. Bisher lief ein Dienst, dessen
+  Datei fehlte, durch das ganze Upgrade weiter, hielt den UDP-Port 4002 — und
+  der neue Dienst scheiterte genau daran. Gesucht wird über `/proc`,
+  argumentweise und nur beim eigenen Benutzer, nie über ein Teilwort in der
+  Befehlszeile. Betrifft `preupgrade.sh`, `uninstall/uninstall` und
+  `bin/dienst.sh stop`.
+
+- **Die Oberfläche vergleicht den ganzen Pfad, nicht nur den Dateinamen.**
+  `gv_dienst_pid()` hielt bisher jeden PHP-Prozess mit dem Dateinamen
+  `govee_dienst.php` für den eigenen Dienst — auch den einer zweiten
+  Installation oder eines ausgepackten Archivs.
+
+  Prüfstand und Messprotokolle: `Pruefung-Govee-0.9.18/`.
 
 ## Neu in 0.9.17
 

@@ -26,10 +26,87 @@ fi
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
 [ -f "$DIENST" ] && /bin/bash "$DIENST" stop >/dev/null 2>&1
 
+# Ist die Nummer $1 ein Dienst dieses Plugins? Argumentweise (Regeln/03):
+# argv[0] ein PHP, argv[1] genau das Skript - nicht nur der Dateiname, sonst
+# traefe es auch einen Editor mit der Datei offen oder den Dienst einer
+# zweiten Installation. Dazu der Benutzer. Wortgleich mit preupgrade.sh;
+# Vorbild LoxBerry-Plugin-APC-UPS-1.2.11.
+GV_DIENST="$BASE/bin/plugins/$PFOLDER/govee_dienst.php"
+GV_UID=$(id -u loxberry 2>/dev/null || id -u)
+
+gv_ist_dienst() {   # $1 PID, $2 Dienstpfad, $3 UID ("" = Benutzer nicht pruefen)
+    [ -r "/proc/$1/cmdline" ] || return 1
+    if [ -n "$3" ]; then
+        [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$3" ] || return 1
+    fi
+    # cat statt Umlenkung: sonst meldet die Schale einen Prozess, der
+    # zwischen Auflistung und Lesen endet, auf der Fehlerausgabe.
+    gv_roh=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$gv_roh" ] || return 1
+    gv_a0=$(printf '%s\n' "$gv_roh" | sed -n '1p')
+    gv_a1=$(printf '%s\n' "$gv_roh" | sed -n '2p')
+    [ -n "$gv_a0" ] && [ -n "$gv_a1" ] || return 1
+    case "${gv_a0##*/}" in php|php[0-9.]*) ;; *) return 1 ;; esac
+    case "$gv_a1" in
+        /*) gv_ziel=$gv_a1 ;;
+        *)  gv_wd=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            gv_ziel="${gv_wd% (deleted)}/$gv_a1" ;;
+    esac
+    [ "$gv_ziel" = "$2" ]
+}
+gv_dienste_suchen() {   # $1 Dienstpfad, $2 UID
+    for gv_d in /proc/[0-9]*; do
+        gv_ist_dienst "${gv_d#/proc/}" "$1" "$2" && echo "${gv_d#/proc/}"
+    done
+    return 0
+}
+gv_dienste_beenden() {  # $1 Dienstpfad, $2 UID
+    gv_liste=$(gv_dienste_suchen "$1" "$2")
+    [ -n "$gv_liste" ] || return 0
+    kill $gv_liste 2>/dev/null
+    gv_i=0
+    while [ $gv_i -lt 10 ] && [ -n "$(gv_dienste_suchen "$1" "$2")" ]; do
+        sleep 1
+        gv_i=$((gv_i + 1))
+    done
+    gv_rest=$(gv_dienste_suchen "$1" "$2")
+    [ -n "$gv_rest" ] && kill -9 $gv_rest 2>/dev/null
+    echo $gv_liste
+}
+
+# Der Zweig darueber raeumt die PID-Datei schon weg, wenn dienst.sh da ist.
+# Fehlt sie - bin/ vom Installer bereits geloescht, misslungene Installation -,
+# ist das hier der einzige Weg, und bis 0.9.18 ging das kill -9 dann
+# ungeprueft an die Nummer aus der Datei. In WSL gemessen
+# (Pruefung-Govee-0.9.18, Fall B4, 18.09.2026): ohne dienst.sh war ein fremder
+# "sleep 600" nach der Deinstallation tot.
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 if [ -f "$PID" ]; then
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    P=$(cat "$PID" 2>/dev/null)
+    case "$P" in ''|*[!0-9]*) P="" ;; esac
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && gv_ist_dienst "$P" "$GV_DIENST" "$GV_UID"; then
+        kill "$P" 2>/dev/null
+        GV_I=0
+        while [ $GV_I -lt 10 ] && kill -0 "$P" 2>/dev/null; do
+            sleep 1
+            GV_I=$((GV_I + 1))
+        done
+        if kill -0 "$P" 2>/dev/null && gv_ist_dienst "$P" "$GV_DIENST" "$GV_UID"; then
+            kill -9 "$P" 2>/dev/null
+        fi
+    elif [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
+        echo "<INFO> Die Nummer $P aus dienst.pid gehoert einem fremden Vorgang -"
+        echo "<INFO> es wurde nichts beendet, die Datei wird entfernt."
+    fi
     rm -f "$PID"
+fi
+
+# Dazu jeder eigene Dienst OHNE PID-Datei - der liefe sonst nach der
+# Deinstallation weiter, hielte den UDP-Port 4002 und schriebe weiter nach
+# MQTT. In WSL gemessen (Pruefung-Govee-0.9.18, Faelle B3 und B5).
+WAISEN=$(gv_dienste_beenden "$GV_DIENST" "$GV_UID")
+if [ -n "$WAISEN" ]; then
+    echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $WAISEN)."
 fi
 
 # ALLE Sicherungen neben dem Ordner - der Installer raeumt sie nicht weg.

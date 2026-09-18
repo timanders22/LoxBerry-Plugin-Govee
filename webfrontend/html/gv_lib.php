@@ -748,14 +748,41 @@ function gv_dienst_pid()
     }
     /* Argumentweise pruefen, nicht die ganze Befehlszeile durchsuchen:
      * /proc/<pid>/cmdline trennt die Argumente mit Nullbytes, ein grep
-     * darueber traefe auch einen Editor mit geoeffneter Datei. */
+     * darueber traefe auch einen Editor mit geoeffneter Datei.
+     *
+     * Verglichen wird der ganze PFAD, nicht nur der Dateiname. Bis 0.9.18
+     * stand hier basename($args[1]) - damit galt auch der Dienst einer
+     * ZWEITEN Installation (govee_01) oder eines ausgepackten Archivs als
+     * "unser" Dienst, und die Oberflaeche zeigte ihn samt seiner Nummer an.
+     * Dieselbe Bauart wie der Befund der Klasse F in preupgrade.sh
+     * (Bestand-2026-09-18/klasse-F, 18.09.2026). */
+    $erwartet = gv_paths()['bindir'] . '/govee_dienst.php';
     $roh = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
     $args = explode("\0", $roh);
-    if (!isset($args[1]) || basename($args[1]) !== 'govee_dienst.php') {
+    if (!isset($args[1]) || $args[1] === '') {
         return 0;
     }
     if (!preg_match('#(^|/)php[0-9.]*$#', isset($args[0]) ? $args[0] : '')) {
         return 0;
+    }
+    $ziel = $args[1];
+    if (substr($ziel, 0, 1) !== '/') {
+        /* Relativer Aufruf: gegen das Arbeitsverzeichnis des Prozesses
+         * aufloesen. dienst.sh startet absolut, ein Start von Hand nicht. */
+        $wd = @readlink('/proc/' . $pid . '/cwd');
+        if (!is_string($wd) || $wd === '') {
+            return 0;
+        }
+        $ziel = preg_replace('/ \(deleted\)$/', '', $wd) . '/' . $ziel;
+    }
+    if ($ziel !== $erwartet) {
+        /* Zweiter Versuch ueber die aufgeloesten Pfade: ein Symlink im Weg
+         * darf einen laufenden Dienst nicht unsichtbar machen. */
+        $r1 = @realpath($ziel);
+        $r2 = @realpath($erwartet);
+        if ($r1 === false || $r2 === false || $r1 !== $r2) {
+            return 0;
+        }
     }
     return $pid;
 }

@@ -64,6 +64,10 @@ LOGDATEI="$PLOG/govee.log"
 # Regel: genau einer schreibt in eine Protokolldatei.
 STARTLOG="$PLOG/govee_start.log"
 SKRIPT="$SELF/govee_dienst.php"
+# Der Dienst laeuft als loxberry (siehe den Abstieg oben); wo es den Benutzer
+# nicht gibt, als der eigene. Gebraucht fuer die Suche nach Diensten ohne
+# PID-Datei: ohne Benutzerfilter liefe sie ueber fremde Prozesse.
+DIENSTUID=$(id -u loxberry 2>/dev/null || id -u)
 
 mkdir -p "$PDATA" "$PLOG" 2>/dev/null
 
@@ -84,6 +88,51 @@ laeuft() {
     [ "$(echo "$ARGS" | sed -n '2p')" = "$SKRIPT" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' || return 1
     return 0
+}
+
+# Dieselbe Probe fuer eine BELIEBIGE Nummer, zusaetzlich mit dem Benutzer -
+# gebraucht fuer die Suche nach Diensten ohne PID-Datei. Wortgleich mit
+# preupgrade.sh und uninstall/uninstall.
+ist_dienst() {   # $1 PID
+    [ -r "/proc/$1/cmdline" ] || return 1
+    [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$DIENSTUID" ] || return 1
+    # cat statt Umlenkung: sonst meldet die Schale einen Prozess, der zwischen
+    # Auflistung und Lesen endet, auf der Fehlerausgabe - und die landet ueber
+    # gv_dienst() in der Oberflaeche.
+    ROH=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$ROH" ] || return 1
+    A0=$(printf '%s\n' "$ROH" | sed -n '1p')
+    A1=$(printf '%s\n' "$ROH" | sed -n '2p')
+    [ -n "$A0" ] && [ -n "$A1" ] || return 1
+    case "${A0##*/}" in php|php[0-9.]*) ;; *) return 1 ;; esac
+    case "$A1" in
+        /*) ZIEL=$A1 ;;
+        *)  WD=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            ZIEL="${WD% (deleted)}/$A1" ;;
+    esac
+    [ "$ZIEL" = "$SKRIPT" ]
+}
+dienste_suchen() {
+    for D in /proc/[0-9]*; do
+        ist_dienst "${D#/proc/}" && echo "${D#/proc/}"
+    done
+    return 0
+}
+# Beendet jeden eigenen Dienst, der gerade laeuft - auch den, der in keiner
+# PID-Datei steht. Zehn Sekunden Zeit, dann hart; vor jedem Signal steht die
+# Probe oben.
+waisen_beenden() {
+    LISTE=$(dienste_suchen)
+    [ -n "$LISTE" ] || return 0
+    kill $LISTE 2>/dev/null
+    N=0
+    while [ $N -lt 10 ] && [ -n "$(dienste_suchen)" ]; do
+        sleep 1
+        N=$((N + 1))
+    done
+    REST=$(dienste_suchen)
+    [ -n "$REST" ] && kill -9 $REST 2>/dev/null
+    echo $LISTE
 }
 
 starten() {
@@ -124,23 +173,40 @@ starten() {
 
 anhalten() {
     rm -f "$SOLL"
-    if ! laeuft; then
-        rm -f "$PID"
-        echo "laeuft nicht"
-        return 0
-    fi
-    P=$(cat "$PID")
-    kill "$P" 2>/dev/null
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        laeuft || break
-        sleep 1
-    done
+    ETWAS=0
     if laeuft; then
-        kill -9 "$P" 2>/dev/null
-        sleep 1
+        P=$(cat "$PID")
+        kill "$P" 2>/dev/null
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+            laeuft || break
+            sleep 1
+        done
+        # laeuft() prueft die Befehlszeile erneut - hart beendet wird also nur,
+        # was immer noch der eigene Dienst ist.
+        if laeuft; then
+            kill -9 "$P" 2>/dev/null
+            sleep 1
+        fi
+        ETWAS=1
     fi
     rm -f "$PID"
-    echo "angehalten"
+    # Und jeder eigene Dienst, der in KEINER PID-Datei steht. Es gibt ihn:
+    # purge_installation loescht data/plugins/<ordner>/ beim Upgrade restlos
+    # (Regeln/06), ein Start von Hand schreibt sie gar nicht erst, und
+    # uninstall/uninstall ruft dieses stop, bevor es selbst aufraeumt. Bis
+    # 0.9.18 meldete "stop" in dieser Lage "laeuft nicht", und der Dienst hielt
+    # den UDP-Port 4002 weiter. In WSL gemessen (Pruefung-Govee-0.9.18,
+    # Fall C4, 18.09.2026).
+    WAISEN=$(waisen_beenden)
+    if [ -n "$WAISEN" ]; then
+        echo "angehalten; zusaetzlich ein Dienst ohne PID-Datei beendet (PID $WAISEN)"
+        return 0
+    fi
+    if [ "$ETWAS" = "1" ]; then
+        echo "angehalten"
+        return 0
+    fi
+    echo "laeuft nicht"
     return 0
 }
 

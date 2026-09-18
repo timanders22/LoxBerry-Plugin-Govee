@@ -36,13 +36,114 @@ if [ -f "$BASE/data/plugins/$PFOLDER/soll_laufen" ]; then
         && echo "<INFO> Der Dienst soll laufen - Merker fuer postupgrade gesetzt."
 fi
 
+# ---------- Den eigenen Dienst anhalten ----------
+# Beendet wird erst NACH einer argumentweisen Gegenprobe, und die steht vor
+# JEDEM Signal - auch vor dem harten. Prozessnummern werden wiederverwendet:
+# liegt eine alte dienst.pid herum und traegt ihre Zahl inzwischen einen
+# fremden Vorgang, beendete das erste Signal genau den. Bis 0.9.18 ging hier
+# beides ungeprueft hinaus. In WSL gemessen (Pruefung-Govee-0.9.18, Faelle A1
+# bis A3, 18.09.2026): ein "sleep 600", dessen Nummer in dienst.pid stand, war
+# nach preupgrade.sh tot - und die Meldung behauptete dazu "Laufender Dienst
+# angehalten - er haelt den UDP-Port 4002."
+#
+# Geprueft werden drei Dinge (Regeln/03, "Prozesse argumentweise erkennen"):
+# argv[0] ist ein PHP, argv[1] ist GENAU dieser Dienstpfad - nicht nur der
+# Dateiname, sonst traefe es "nano <pfad>/govee_dienst.php" ebenso wie den
+# Dienst einer zweiten Installation im Nachbarordner -, und der Prozess gehoert
+# dem Dienstbenutzer. Vorbild: LoxBerry-Plugin-APC-UPS-1.2.11 (apc_ist_dienst),
+# LoxBerry-Plugin-Midea2Lox-4.5.7 (eigener_dienst).
+GV_DIENST="$BASE/bin/plugins/$PFOLDER/govee_dienst.php"
+# Der Dienst laeuft als loxberry (bin/dienst.sh steigt dorthin ab); wo es den
+# Benutzer nicht gibt, als der eigene.
+GV_UID=$(id -u loxberry 2>/dev/null || id -u)
+
+gv_ist_dienst() {   # $1 PID, $2 Dienstpfad, $3 UID ("" = Benutzer nicht pruefen)
+    [ -r "/proc/$1/cmdline" ] || return 1
+    if [ -n "$3" ]; then
+        [ "$(stat -c %u "/proc/$1" 2>/dev/null)" = "$3" ] || return 1
+    fi
+    # Gelesen wird mit cat, nicht mit einer Umlenkung: endet der Prozess
+    # zwischen Auflistung und Lesen, meldet die Schale die fehlgeschlagene
+    # Umlenkung selbst auf die Fehlerausgabe - mitten in das Protokoll des
+    # Installers hinein. Das 2>/dev/null am Ende der Zeile faengt sie nicht.
+    gv_roh=$(cat "/proc/$1/cmdline" 2>/dev/null | tr '\0' '\n')
+    [ -n "$gv_roh" ] || return 1
+    gv_a0=$(printf '%s\n' "$gv_roh" | sed -n '1p')
+    gv_a1=$(printf '%s\n' "$gv_roh" | sed -n '2p')
+    [ -n "$gv_a0" ] && [ -n "$gv_a1" ] || return 1
+    case "${gv_a0##*/}" in php|php[0-9.]*) ;; *) return 1 ;; esac
+    # Ein relativer Pfad wird gegen das Arbeitsverzeichnis des Prozesses
+    # aufgeloest. dienst.sh startet zwar immer absolut; ein Start von Hand aus
+    # dem bin-Ordner heraus muss aber genauso erkannt werden.
+    case "$gv_a1" in
+        /*) gv_ziel=$gv_a1 ;;
+        *)  gv_wd=$(readlink "/proc/$1/cwd" 2>/dev/null) || return 1
+            gv_ziel="${gv_wd% (deleted)}/$gv_a1" ;;
+    esac
+    [ "$gv_ziel" = "$2" ]
+}
+# Alle eigenen Dienste des Dienstbenutzers - unabhaengig von der PID-Datei.
+gv_dienste_suchen() {   # $1 Dienstpfad, $2 UID
+    for gv_d in /proc/[0-9]*; do
+        gv_ist_dienst "${gv_d#/proc/}" "$1" "$2" && echo "${gv_d#/proc/}"
+    done
+    return 0
+}
+# Beendet sie (zehn Sekunden Zeit, dann hart) und gibt die Nummern aus.
+gv_dienste_beenden() {  # $1 Dienstpfad, $2 UID
+    gv_liste=$(gv_dienste_suchen "$1" "$2")
+    [ -n "$gv_liste" ] || return 0
+    kill $gv_liste 2>/dev/null
+    gv_i=0
+    while [ $gv_i -lt 10 ] && [ -n "$(gv_dienste_suchen "$1" "$2")" ]; do
+        sleep 1
+        gv_i=$((gv_i + 1))
+    done
+    gv_rest=$(gv_dienste_suchen "$1" "$2")
+    [ -n "$gv_rest" ] && kill -9 $gv_rest 2>/dev/null
+    echo $gv_liste
+}
+
 PID="$BASE/data/plugins/$PFOLDER/dienst.pid"
 if [ -f "$PID" ]; then
-    kill "$(cat "$PID")" 2>/dev/null || true
-    sleep 2
-    kill -9 "$(cat "$PID")" 2>/dev/null || true
+    P=$(cat "$PID" 2>/dev/null)
+    case "$P" in ''|*[!0-9]*) P="" ;; esac
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null && gv_ist_dienst "$P" "$GV_DIENST" "$GV_UID"; then
+        kill "$P" 2>/dev/null
+        GV_I=0
+        while [ $GV_I -lt 10 ] && kill -0 "$P" 2>/dev/null; do
+            sleep 1
+            GV_I=$((GV_I + 1))
+        done
+        # Hart nur, wenn er noch lebt UND es immer noch unser Dienst ist: in
+        # der Wartezeit kann die Nummer frei geworden und neu vergeben sein.
+        if kill -0 "$P" 2>/dev/null && gv_ist_dienst "$P" "$GV_DIENST" "$GV_UID"; then
+            kill -9 "$P" 2>/dev/null
+        fi
+        # Nur HIER gemeldet: eine liegengebliebene PID-Datei ist kein
+        # laufender Dienst, und ein fremder Vorgang erst recht nicht.
+        echo "<INFO> Laufender Dienst angehalten - er haelt den UDP-Port 4002."
+    elif [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
+        echo "<INFO> Die Nummer $P aus dienst.pid gehoert einem fremden Vorgang -"
+        echo "<INFO> es wurde nichts beendet, die Datei wird entfernt."
+    else
+        echo "<INFO> Der Dienst lief nicht - es war nichts anzuhalten."
+    fi
     rm -f "$PID"
-    echo "<INFO> Laufender Dienst angehalten - er haelt den UDP-Port 4002."
+fi
+
+# Dazu jeder eigene Dienst OHNE PID-Datei. Die PID-Datei liegt im Datenordner,
+# und den raeumt purge_installation zwischen preupgrade und postinstall
+# restlos ab (Regeln/06); nach einem abgebrochenen Upgrade oder einem Start von
+# Hand gibt es sie gar nicht. Ohne diesen Zweig liefe der alte Dienst durch das
+# ganze Upgrade weiter, hielte den UDP-Port 4002, und der neue scheiterte
+# genau daran. Nur PHP mit genau diesem Skript, nur der Dienstbenutzer - nie
+# ein Teilwort systemweit. In WSL gemessen (Pruefung-Govee-0.9.18, Faelle A5
+# und A6): ohne den Zweig lief der Waise nach preupgrade.sh weiter, und bei
+# zwei eigenen Diensten blieb einer stehen.
+WAISEN=$(gv_dienste_beenden "$GV_DIENST" "$GV_UID")
+if [ -n "$WAISEN" ]; then
+    echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $WAISEN)."
 fi
 
 CF="$BASE/config/plugins/$PFOLDER/govee.json"
