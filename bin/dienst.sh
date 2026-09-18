@@ -50,6 +50,12 @@ PLOG="$LBHOMEDIR/log/plugins/$PNAME"
 PCONFIG="$LBHOMEDIR/config/plugins/$PNAME"
 PID="$PDATA/dienst.pid"
 SOLL="$PDATA/soll_laufen"
+# Die Marke "Aktualisierung laeuft". Sie liegt NEBEN dem Datenordner, weil
+# purge_installation data/plugins/<ordner>/ zwischen preupgrade.sh und
+# postinstall.sh restlos abraeumt (Regeln/06) - im Ordner waere sie genau
+# dann fort, wenn sie gebraucht wird. preupgrade.sh legt sie als Erstes an,
+# postupgrade.sh - das letzte Hakenskript dieser Linie - entfernt sie wieder.
+MARKE="$LBHOMEDIR/data/plugins/$PNAME.upgrade_laeuft"
 LOGDATEI="$PLOG/govee.log"
 # Eigene Datei fuer alles, was NEBEN dem Protokoll anfaellt: Meldungen des
 # Starts und alles, was das PHP-Skript nach stderr schreibt, bevor sein
@@ -135,9 +141,54 @@ waisen_beenden() {
     echo $LISTE
 }
 
+# Laeuft gerade eine Aktualisierung dieses Plugins?
+#
+# Gemessen (Pruefung-Govee-0.9.19, Faelle A5 bis A7 und D1/D2, 18.09.2026):
+# ohne diese Frage startete der Knopf "Dienst starten" der Oberflaeche mitten
+# in der Upgrade-Luecke einen Dienst - und legte dabei soll_laufen an. Von da
+# an hielt der Minutentakt ihn am Leben, auch wenn der Dienst vor dem Upgrade
+# BEWUSST angehalten worden war (am Geraet ist er seit dem 08.09.2026 aus).
+#
+# Vier Ausgaenge, alle gemessen:
+#   Marke juenger als 3600 s  -> gesperrt (Fall C1)
+#   Marke aelter, aus der Zukunft, leer oder unlesbar -> sie gilt nicht
+#                                (Faelle C2 bis C5; eine abgebrochene
+#                                Installation darf den Dienst nicht fuer
+#                                immer stilllegen)
+#   keine lesbare Uhr         -> die Pruefung faellt GESCHLOSSEN aus
+#                                (CLAUDE.md 4; Fall C6)
+#   GV_START_TROTZ_MARKE=1    -> Ausnahme fuer das letzte Hakenskript
+#                                (Fall C10)
+#
+# Die Ausnahme gehoert postupgrade.sh: es startet den Dienst, BEVOR es die
+# Marke entfernt. Faellt die Marke vorher, ist das Fenster zwischen dem
+# "touch soll_laufen" hier unten und dem Schreiben der PID-Datei fuer den
+# Minutentakt offen (bei Chromecast4lox 1.3.10 in 400 Waechterlaeufen
+# gemessen, Regeln/06).
+marke_sperrt() {
+    [ -f "$MARKE" ] || return 1
+    [ "${GV_START_TROTZ_MARKE:-0}" = "1" ] && return 1
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in ''|*[!0-9]*) return 0 ;; esac
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in ''|*[!0-9]*) return 1 ;; esac
+    ALTER=$((JETZT - SEIT))
+    [ "$ALTER" -lt 0 ] && return 1
+    [ "$ALTER" -le 3600 ]
+}
+
 starten() {
     if laeuft; then
         echo "laeuft bereits (PID $(cat "$PID"))"
+        return 0
+    fi
+    # Diese Frage steht VOR dem touch auf soll_laufen weiter unten. Stuende
+    # sie dahinter, legte der abgewiesene Start den Merker trotzdem an, und
+    # der Waechter startete den Dienst eine Minute spaeter doch (Fall A6).
+    # Rueckgabewert 0: eine laufende Aktualisierung ist kein Fehlschlag, und
+    # postupgrade.sh soll deswegen nicht "liess sich nicht starten" melden.
+    if marke_sperrt; then
+        echo "Eine Aktualisierung dieses Plugins laeuft - der Dienst wird danach gestartet."
         return 0
     fi
     if ! command -v php >/dev/null 2>&1; then

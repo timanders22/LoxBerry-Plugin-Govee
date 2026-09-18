@@ -3,9 +3,50 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.18 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.19 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.19
+
+- **Während einer Aktualisierung startet der Dienst nicht mehr.** LoxBerry legt
+  die Cron-Datei eines Plugins rund eine Minute vor `postinstall.sh` neu an; in
+  dieser Lücke ist der Datenordner schon gelöscht, die neuen Dateien liegen
+  aber bereit (am Gerät am Installationsprotokoll gemessen, siehe `Regeln/06`).
+  `preupgrade.sh` legt deshalb als Erstes die Marke
+  `data/plugins/govee.upgrade_laeuft` mit der Unixzeit an — **neben** dem
+  Datenordner, weil der Installer den Ordner selbst abräumt. `bin/dienst.sh`
+  startet nicht, solange die Marke höchstens eine Stunde alt ist; ist sie
+  älter, leer, unlesbar oder liegt sie in der Zukunft, gilt sie nicht, damit
+  eine abgebrochene Installation den Dienst nicht für immer stilllegt. Lässt
+  sich die Uhr nicht lesen, fällt die Prüfung geschlossen aus. `postupgrade.sh`
+  — das letzte Installationsskript dieser Linie — startet den Dienst und
+  entfernt die Marke danach über einen `trap`, sodass sie auch nach einem
+  vorzeitigen Abbruch fällt. `uninstall/uninstall` räumt sie mit weg.
+
+- **Der Knopf „Dienst starten“ war das Loch.** Der minütliche Wächter startete
+  in der Lücke nichts: er verlangt `data/plugins/govee/soll_laufen`, und den
+  hat der Installer gerade mit dem Ordner gelöscht. Der Knopf in der Oberfläche
+  aber schon — und `starten()` legte dabei `soll_laufen` neu an. Von da an
+  hielt der Minutentakt den Dienst am Leben, auch wenn er vor der
+  Aktualisierung **bewusst angehalten** worden war. In WSL gemessen
+  (18.09.2026): ein vor dem Upgrade angehaltener Dienst lief danach wieder.
+  Die Frage nach der Marke steht deshalb **vor** dem `touch` auf `soll_laufen`.
+
+- **Neue Zeile im Reiter Test:** „Läuft gerade eine Aktualisierung dieses
+  Plugins?“ Sie unterscheidet drei Fälle — keine Marke, eine gültige Marke
+  (Hinweis, grauer Punkt) und eine liegengebliebene ungültige Marke (Kreuz mit
+  dem Dateinamen zum Löschen).
+
+- **Die Oberfläche wird nicht gesperrt.** Ob bei liegender Marke gesperrt wird,
+  ist eine Messung und keine Regel. Gemessen wurde, was ein Seitenaufruf und
+  ein Speichern mitten in der Lücke anrichten: nichts. Die Konfiguration wird
+  dort aus der Zweitschrift geheilt, die `preupgrade.sh` gerade angelegt hat,
+  und steht nach dem Upgrade unverändert da. Eine Sperre ohne gemessenen
+  Schaden nähme dem Anwender nur die Seite.
+
+  Prüfstand und Messprotokolle: `Pruefung-Govee-0.9.19/` — 36 Fälle,
+  vorher 9 rot, nachher 0 rot; sieben Rückbauten als Eichung.
 
 ## Neu in 0.9.18
 

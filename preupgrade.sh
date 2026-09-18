@@ -18,6 +18,34 @@ ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 
+# ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
+# Sie steht VOR allem anderen, damit sie auch dann liegt, wenn weiter unten
+# etwas schiefgeht. Der Installer legt die Cron-Datei rund eine Minute vor
+# postinstall.sh neu an; in dieser Luecke ist der Datenordner schon geloescht,
+# die neuen Dateien liegen aber bereit (Regeln/06, am Geraet am 08.09.2026 am
+# Installationsprotokoll gemessen: preupgrade 03:31:30, Cron neu 03:31:32,
+# postinstall erst 03:32:24).
+#
+# Der minuetliche Waechter dieser Linie startet in der Luecke nichts - er
+# verlangt data/plugins/<ordner>/soll_laufen, und den hat purge_installation
+# gerade mitgeloescht (Pruefung-Govee-0.9.19, Faelle A1 und A4). Der Knopf
+# "Dienst starten" in der Oberflaeche aber schon: er startete dort einen
+# Dienst und legte soll_laufen wieder an, sodass ein bewusst angehaltener
+# Dienst nach dem Upgrade lief (Faelle A5 bis A7, D1/D2).
+#
+# Die Marke liegt NEBEN dem Datenordner - im Ordner loeschte sie
+# purge_installation mit. Im Inhalt steht die Unixzeit; bin/dienst.sh nimmt
+# sie nur, solange sie hoechstens eine Stunde alt ist.
+mkdir -p "$BASE/data/plugins" 2>/dev/null
+MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+date +%s > "$MARKE" 2>/dev/null
+if [ -s "$MARKE" ]; then
+    echo "<OK> Dienststart bis zum Ende der Aktualisierung gesperrt."
+else
+    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
+    echo "<WARNING> koennte waehrend der Aktualisierung anlaufen."
+fi
+
 # Ob der Dienst nach dem Upgrade wieder anlaufen soll, muss HIER festgehalten
 # werden - vor dem Aufraeumen des Installers - und NEBEN dem Datenordner.
 # Zwischen preupgrade und postinstall loescht purge_installation

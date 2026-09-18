@@ -792,6 +792,43 @@ function gv_dienst_soll()
     return is_file(gv_paths()['datadir'] . '/soll_laufen') ? 1 : 0;
 }
 
+/**
+ * Liegt die Marke "Aktualisierung laeuft"?
+ *
+ * Rueckgabe array(liegt, gueltig, alter). "liegt" sagt, ob die Datei da ist,
+ * "gueltig", ob bin/dienst.sh den Start deswegen abweist. Beides getrennt,
+ * weil eine liegengebliebene Marke ein anderer Befund ist als eine laufende
+ * Aktualisierung - im Reiter Test steht zu jedem Fall ein eigener Satz.
+ *
+ * Die Datei liegt NEBEN dem Datenordner (data/plugins/<ordner>.upgrade_laeuft),
+ * weil purge_installation den Ordner beim Upgrade abraeumt. Die Grenze 3600 s
+ * ist dieselbe wie in bin/dienst.sh, marke_sperrt(); wer eine der beiden
+ * aendert, aendert beide.
+ *
+ * ctype_digit waere hier falsch: ctype ist eine Erweiterung, die nicht
+ * garantiert geladen ist (Regeln/02). Deshalb preg_match.
+ */
+function gv_upgrade_marke()
+{
+    $p = gv_paths();
+    if ($p['home'] === '') {
+        return array(0, 0, -1);
+    }
+    $f = $p['home'] . '/data/plugins/' . $p['plugin'] . '.upgrade_laeuft';
+    if (!is_file($f)) {
+        return array(0, 0, -1);
+    }
+    $roh = trim((string) @file_get_contents($f));
+    if ($roh === '' || !preg_match('/^[0-9]+$/', $roh)) {
+        return array(1, 0, -1);
+    }
+    $alter = time() - (int) $roh;
+    if ($alter < 0 || $alter > 3600) {
+        return array(1, 0, $alter);
+    }
+    return array(1, 1, $alter);
+}
+
 /** $befehl ist 'start', 'stop' oder 'restart'. Rueckgabe: array(ok, Ausgabe) */
 function gv_dienst($befehl)
 {

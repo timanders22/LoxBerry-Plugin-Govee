@@ -27,6 +27,25 @@ function gv_pruefungen()
         $pid > 0 ? gv_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
                  : (gv_dienst_soll() ? gv_t('TEST.A_DIENST_SOLL_TOT') : gv_t('TEST.A_DIENST_GESTOPPT')));
 
+    /* Laeuft gerade eine Aktualisierung? Solange die Marke liegt, weist
+     * bin/dienst.sh jeden Start ab - auch den ueber die Knoepfe im Reiter
+     * Einstellungen. Ohne diese Zeile gaebe es die Regel, aber nichts, was
+     * sie sichtbar macht (CLAUDE.md 6: zu jeder Regel gehoert das Werkzeug,
+     * das sie findet). Drei Ausgaenge, drei Saetze; die liegengebliebene
+     * Marke ist ein Kreuz, die laufende Aktualisierung nur ein Hinweis. */
+    list($mk_liegt, $mk_gueltig, $mk_alter) = gv_upgrade_marke();
+    if (!$mk_liegt) {
+        $zeilen[] = gv_pruefzeile(1, gv_t('TEST.F_UPGRADE_MARKE'),
+            gv_t('TEST.A_UPGRADE_KEINE'));
+    } elseif ($mk_gueltig) {
+        $zeilen[] = gv_pruefzeile(-1, gv_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(gv_t('TEST.A_UPGRADE_LAEUFT'), (int) $mk_alter));
+    } else {
+        $zeilen[] = gv_pruefzeile(0, gv_t('TEST.F_UPGRADE_MARKE'),
+            sprintf(gv_t('TEST.A_UPGRADE_ALT'),
+                gv_e($p['plugin'] . '.upgrade_laeuft')));
+    }
+
     /* Die Prozessnummer beantwortet nicht, ob der Dienst noch ARBEITET - ein
      * Prozess kann dastehen und nichts mehr tun. Das Lebenszeichen kommt aus
      * zustand.json, das der Dienst in jeder Runde neu schreibt. */
