@@ -14,13 +14,42 @@
 # aus dem eigenen Ablageort abgeleitet - installiert ist das data/system, der
 # Ordnername wurde "system" (am Geraet so errechnet, 17.09.2026). Der Dienst
 # wurde dann nicht angehalten, und die Sicherungen unten blieben liegen.
-SELF=$(cd "$(dirname "$0")" && pwd)
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$SELF/../../.." 2>/dev/null && pwd)
+#
+# Die Wurzel: $5 oder $LBHOMEDIR, wenn dort config/plugins und data/plugins
+# liegen, sonst aufwaerts suchen bis config/system/general.json (Regeln/06).
+# Bis 0.9.20 stand hier als Rueckfall "$SELF/../../.." ohne general.json: in
+# einem fremden Baum loeschte dieses Skript dessen Sicherungen und
+# Datenordner und meldete "Govee-Plugin entfernt" (in WSL gemessen,
+# Pruefung-Govee-0.9.21, Fall W3; derselbe Schaden wie im Raumklima-Vorfall).
+gv_wurzel_suchen() {
+    gv_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    gv_i=0
+    while [ -n "$gv_v" ] && [ "$gv_v" != "/" ] && [ "$gv_i" -lt 8 ]; do
+        if [ -d "$gv_v/config/plugins" ] && [ -d "$gv_v/data/plugins" ] \
+           && [ -f "$gv_v/config/system/general.json" ]; then
+            echo "$gv_v"
+            return 0
+        fi
+        gv_v=$(dirname "$gv_v")
+        gv_i=$((gv_i + 1))
+    done
+    return 1
+}
+SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(gv_wurzel_suchen "$SELF") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von $SELF"
+    echo "<WARNING> traegt kein Verzeichnis config/plugins, data/plugins und"
+    echo "<WARNING> config/system/general.json. Es wurde NICHTS geloescht und"
+    echo "<WARNING> nichts beendet."
+    exit 1
 fi
 
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
@@ -45,6 +74,11 @@ gv_ist_dienst() {   # $1 PID, $2 Dienstpfad, $3 UID ("" = Benutzer nicht pruefen
     [ -n "$gv_roh" ] || return 1
     gv_a0=$(printf '%s\n' "$gv_roh" | sed -n '1p')
     gv_a1=$(printf '%s\n' "$gv_roh" | sed -n '2p')
+    # Genau zwei Argumente: ein Einmallauf wie 'php <dienst> --einmal' oder
+    # '--selbsttest' ist kein Dienst (Regeln/06, argumentweise Erkennung).
+    # Bis 0.9.20 wurde er hier beendet (in WSL gemessen,
+    # Pruefung-Govee-0.9.21, Faelle D4/D5).
+    [ -z "$(printf '%s\n' "$gv_roh" | sed -n '3p')" ] || return 1
     [ -n "$gv_a0" ] && [ -n "$gv_a1" ] || return 1
     case "${gv_a0##*/}" in php|php[0-9.]*) ;; *) return 1 ;; esac
     case "$gv_a1" in

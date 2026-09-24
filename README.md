@@ -3,9 +3,68 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.20 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.21 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.21
+
+- **Die Kachel „MQTT" zeigt jetzt, ob dieses Plugin veröffentlicht.** Bis 0.9.20
+  stand dort als großer Wert der Autostart des MQTT-Gateways von LoxBerry, und
+  „MQTT ein" las sich, als sende das Plugin — auch wenn es im Reiter MQTT
+  ausgeschaltet war. Der Autostart des Gateways steht jetzt klein darunter;
+  fehlt der MQTT-Abschnitt in der LoxBerry-Konfiguration, heißt er dort
+  „nicht feststellbar" statt „aus".
+- **Die Hakenskripte suchen die LoxBerry-Wurzel, statt sie zu raten.**
+  `preupgrade.sh`, `postinstall.sh`, `postupgrade.sh` und
+  `uninstall/uninstall` nehmen die Wurzel vom Installer (fünftes Argument)
+  oder aus `$LBHOMEDIR` und suchen sonst aufwärts nach einem Verzeichnis mit
+  `config/plugins`, `data/plugins` und `config/system/general.json`. Bis
+  0.9.20 fielen sie auf eine feste Ebenenzahl zurück — `preupgrade.sh` auf gar
+  nichts und legte dann Dateien ab der Laufwerkswurzel an. In einem fremden
+  Baum legte `postinstall.sh` dort Ordner an, `postupgrade.sh` startete dessen
+  Dienst, und die Deinstallation löschte dort Sicherungen (in WSL gemessen).
+  Ohne Wurzel warnen die Skripte jetzt und tun nichts. Bei einer regulären
+  Installation übergibt LoxBerry die Wurzel — dort ändert sich nichts.
+- **Keine Pfade mehr ab der Laufwerkswurzel.** Ohne LoxBerry-Wurzel suchte
+  die Sprachauswahl unter `/templates/plugins/html/lang`, und Oberfläche wie
+  Dienst probierten ihre Bibliothek zuerst an Stellen außerhalb des eigenen
+  Ordners; was dort lag, lief als Bibliothek. Jetzt entscheidet der eigene
+  Ablageort: installiert gilt die Bibliothek der Installation, sonst die im
+  eigenen Archiv.
+- **Ein ausgepacktes Archiv greift nicht mehr in die Anlage ein.** Liegt es
+  unter einer echten LoxBerry-Wurzel, arbeitet es in seinem eigenen Ordner,
+  außer `LBHOMEDIR` und `LBPPLUGINDIR` sind beide gesetzt. Bis 0.9.20 las und
+  schrieb es Konfiguration, Warteschlange und Protokoll der Anlage, schon mit
+  `LBHOMEDIR` allein, wie es am Gerät in `/etc/environment` steht;
+  `bin/govee_dienst.php` bricht dort jetzt ab, statt als Dienst der Anlage zu
+  laufen, und `bin/dienst.sh stop` hält den Dienst der Anlage mit
+  `LBPPLUGINDIR` allein nicht mehr an.
+- **Ein Einmallauf ist kein Dienst.** `php govee_dienst.php --einmal` oder
+  `--selbsttest` zählt für `dienst.sh`, `preupgrade.sh`, die Deinstallation
+  und die Oberfläche nicht mehr als laufender Dienst und wird nicht mehr
+  beendet.
+- **Schaltknöpfe ohne laufenden Dienst werden abgewiesen.** Bis 0.9.20 reihte
+  der Reiter Test den Befehl auch ohne Dienst ein, und der nächste Dienststart
+  schaltete die Leuchte ungefragt. Jetzt sagt die Seite, dass der Dienst nicht
+  läuft, und der Dienst verwirft beim Start jeden Auftrag, der älter als 60
+  Sekunden ist. Der Miniserver-Endpunkt wies schon vorher mit 503 ab.
+- **Sichern und Zurückspielen nach Inhalt, nicht nach Größe.**
+  `preupgrade.sh` sichert `govee.json` nur, wenn sie ein Aktionstoken oder ein
+  Gerät trägt, und `geheim.json` nur mit Cloud-Schlüssel — eine leere Datei
+  überschreibt die gute Sicherung nicht mehr. `postinstall.sh` spielt eine
+  Zweitschrift mit Inhalt auch über eine abgeschnittene Datei zurück (die
+  bleibt als `govee.json.kaputt.<Zeit>` liegen), meldet eine leere
+  Zweitschrift nicht mehr als „wiederhergestellt" und löscht die alte
+  Zweitschrift aus 0.9.8 erst, wenn sie übernommen ist oder nichts Neues
+  trägt.
+- **Nach einem Upgrade keine Erstanleitung mehr.** Sind Geräte eingerichtet,
+  schließt `postinstall.sh` mit „es ist nichts weiter einzurichten" statt mit
+  den Schritten der Ersteinrichtung.
+
+Unverändert und geprüft: MQTT geht weiterhin ausschließlich flüchtig
+(`publish`) an den UDP-Eingang des Gateways, es gibt keine zurückbehaltenen
+Themen und damit bei der Deinstallation nichts abzuräumen.
 
 ## Neu in 0.9.20
 

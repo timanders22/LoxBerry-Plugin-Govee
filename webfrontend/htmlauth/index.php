@@ -18,12 +18,22 @@ error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 /* Bibliothek einbinden. Sie liegt unter webfrontend/html/, weil Endpunkt und
  * Dienst sie ebenfalls brauchen - installiert unter
  * <home>/webfrontend/html/plugins/<ordner>/, im Archiv unter ../html/. */
+/* Welche Lage gilt, entscheidet der eigene Ablageort, nicht die Reihenfolge
+ * der Versuche: liegt diese Datei unter .../plugins/<ordner>, ist sie
+ * installiert, sonst liegt sie in einem ausgepackten Archiv. Bis 0.9.20
+ * wurden drei Kandidaten der Reihe nach probiert, der zweite VOR der eigenen
+ * Bibliothek - aus einem Archiv unter / war das
+ * /html/plugins/htmlauth/gv_lib.php ab der Laufwerkswurzel, und was dort lag,
+ * lief als Bibliothek (in WSL gemessen, Pruefung-Govee-0.9.21, Fall C3).
+ * Bauart ZendureSolarFlow 0.9.26. */
 $gv_gefunden_lib = false;
-foreach (array(
-    dirname(dirname(__DIR__)) . '/html/plugins/' . basename(__DIR__) . '/gv_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/html/plugins/' . basename(__DIR__) . '/gv_lib.php',
-    dirname(__DIR__) . '/html/gv_lib.php',
-) as $gv_kandidat) {
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $gv_kandidaten = array(dirname(dirname(dirname(__DIR__))) . '/html/plugins/'
+        . basename(__DIR__) . '/gv_lib.php');
+} else {
+    $gv_kandidaten = array(dirname(__DIR__) . '/html/gv_lib.php');
+}
+foreach ($gv_kandidaten as $gv_kandidat) {
     if (is_file($gv_kandidat)) {
         require_once $gv_kandidat;
         $gv_gefunden_lib = true;
@@ -757,9 +767,18 @@ if ($gv_rahmen) {
     <b><?= $gv_alter < 0 ? '&ndash;' : gv_e($gv_d[0]) ?></b>
     <span class="sm-hilfe"><?= gv_e($gv_d[1]) ?></span>
   </div>
+  <!-- Der grosse Wert ist die MQTT-Veroeffentlichung DIESES Plugins (mqtt_ein),
+       der Autostart des Gateways steht klein darunter. Bis 0.9.20 stand hier
+       der Autostart des Gateways; "MQTT ein" las sich, als sende das Plugin,
+       auch wenn es gar nicht veroeffentlichte.
+       Vorbild ZendureSolarFlow 0.9.21 und BatterieBMS 0.9.22. Ohne
+       MQTT-Abschnitt in general.json heisst der Autostart "nicht feststellbar"
+       statt "aus". -->
   <div class="sm-kachel">MQTT
-    <b class="<?= $gv_mqtt['autostart'] ? 'sm-an' : 'sm-aus' ?>"><?= $gv_mqtt['autostart'] ? gv_e(gv_t('ALLG.EIN')) : gv_e(gv_t('ALLG.AUS')) ?></b>
-    <span class="sm-hilfe"><?= gv_e(gv_t('ALLG.GATEWAY')) ?></span>
+    <b class="<?= !empty($gv_cfg['mqtt_ein']) ? 'sm-an' : 'sm-aus' ?>"><?= !empty($gv_cfg['mqtt_ein']) ? gv_e(gv_t('ALLG.EIN')) : gv_e(gv_t('ALLG.AUS')) ?></b>
+    <span class="sm-hilfe"><?= gv_e(sprintf(gv_t('ALLG.KACHEL_MQTT_HILFE'),
+        !$gv_mqtt['gefunden'] ? gv_t('ALLG.NICHT_FESTSTELLBAR')
+        : ($gv_mqtt['autostart'] ? gv_t('ALLG.EIN') : gv_t('ALLG.AUS')))) ?></span>
   </div>
 </div>
 

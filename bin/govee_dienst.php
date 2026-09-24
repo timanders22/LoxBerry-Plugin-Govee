@@ -31,12 +31,21 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
+/* Bibliothek finden. Installiert oder Archiv entscheidet der eigene
+ * Ablageort: installiert liegt diese Datei unter <home>/bin/plugins/<ordner>,
+ * im ausgepackten Archiv unter <archiv>/bin. Bis 0.9.20 wurden drei
+ * Kandidaten der Reihe nach probiert, und der erste lautete aus einem Archiv
+ * unter / /webfrontend/html/plugins/bin/gv_lib.php ab der Laufwerkswurzel -
+ * was dort lag, lief als Bibliothek, auch wenn die eigene daneben lag (in WSL
+ * gemessen, Pruefung-Govee-0.9.21, Fall C4). Bauart ZendureSolarFlow 0.9.26. */
 $gv_lib = null;
-foreach (array(
-    dirname(dirname(__DIR__)) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/gv_lib.php',
-    dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/gv_lib.php',
-    dirname(__DIR__) . '/webfrontend/html/gv_lib.php',
-) as $gv_kandidat) {
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $gv_kandidaten = array(dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/'
+        . basename(__DIR__) . '/gv_lib.php');
+} else {
+    $gv_kandidaten = array(dirname(__DIR__) . '/webfrontend/html/gv_lib.php');
+}
+foreach ($gv_kandidaten as $gv_kandidat) {
     if (is_file($gv_kandidat)) {
         $gv_lib = $gv_kandidat;
         break;
@@ -80,6 +89,14 @@ foreach (array_slice($argv, 1) as $gv_arg) {
         exit(2);
     }
 }
+
+/* Ohne Wurzel, oder aus einem ausgepackten Archiv heraus: nichts anlegen,
+ * nichts abfragen, keinen Port binden (gv_keine_wurzel_abbruch() in
+ * gv_lib.php). Bis 0.9.20 lief ein Archiv unter einer echten Wurzel hier als
+ * Dienst bzw. Einmallauf der Anlage - mit deren Konfiguration, Warteschlange
+ * und Protokoll (in WSL gemessen, Pruefung-Govee-0.9.21, Faelle B6/B7). Der
+ * Selbsttest oben ist ausgenommen: er prueft nur den Nachbau. */
+gv_keine_wurzel_abbruch('govee_dienst.php');
 
 $gv_einmal = in_array('--einmal', $argv, true);
 $gv_p = gv_paths();
@@ -148,6 +165,7 @@ if ($gv_horcher === null) {
     exit(1);
 }
 gv_log('Antwortport ' . GV_PORT_ANTWORT . ' geoeffnet.');
+gv_alte_befehle_verwerfen();
 
 /**
  * Das Lebenszeichen - und die letzte Stoerung.
@@ -551,6 +569,46 @@ function gv_befehl_cloud($g, $aktion, $b)
             . (isset($antwort['msg']) ? (string) $antwort['msg'] : 'ohne Begruendung'));
     }
     return array(1, 'Die Cloud hat den Befehl fuer ' . $g['name'] . ' angenommen.');
+}
+
+/**
+ * Veraltete Auftraege beim Dienststart verwerfen.
+ *
+ * Bis 0.9.20 fuehrte ein frisch gestarteter Dienst jeden liegenden Auftrag
+ * aus, gleich wie alt: ein "ein" aus dem Reiter Test, eingereiht ohne
+ * laufenden Dienst, schaltete die Leuchte beim naechsten Start ungefragt (in
+ * WSL gemessen, Pruefung-Govee-0.9.21, Faelle K4/K5). Seit 0.9.21 reiht
+ * gv_befehl_absetzen() ohne Dienst gar nicht mehr ein; was trotzdem liegt
+ * (Dienst starb zwischen Pruefung und Abholen, Datenordner zurueckgesichert),
+ * faellt hier heraus.
+ *
+ * 60 s wie BatterieBMS 0.9.25 und ZendureSolarFlow 0.9.26 (Entscheidung des
+ * Hausherrn vom 18.09.2026): wer einreiht, wartet hoechstens GV_WARTEN_WEB =
+ * 10 s auf die Antwort. Ein Zeitpunkt mehr als 5 s in der Zukunft gilt
+ * ebenfalls als veraltet; ohne lesbaren Zeitpunkt zaehlt die Aenderungszeit
+ * der Datei. Nur beim Start; im Betrieb holt der Dienst jeden Auftrag im
+ * naechsten Durchlauf ab.
+ */
+function gv_alte_befehle_verwerfen()
+{
+    $ordner = gv_paths()['datadir'] . '/befehle';
+    $jetzt = time();
+    clearstatcache();
+    foreach (glob($ordner . '/*.json') ?: array() as $datei) {
+        $b = gv_json_lesen($datei);
+        $ts = (isset($b['ts']) && preg_match('/^[0-9]{1,12}$/', (string) $b['ts']))
+            ? (int) $b['ts'] : (int) @filemtime($datei);
+        $alter = $ts > 0 ? $jetzt - $ts : null;
+        if ($alter !== null && $alter <= 60 && $alter >= -5) {
+            continue;
+        }
+        @unlink($datei);
+        gv_antwort(basename($datei, '.json'), 0, 'Beim Dienststart verworfen: veraltet.');
+        gv_log('Warteschlange beim Start: Auftrag '
+             . (isset($b['aktion']) ? preg_replace('/[^a-z0-9_]/i', '', (string) $b['aktion']) : '?')
+             . ($alter === null ? ' ohne lesbaren Zeitpunkt' : ' ' . $alter . ' s alt')
+             . ' - VERWORFEN, nicht ausgefuehrt.');
+    }
 }
 
 /** Die Warteschlange abarbeiten. Harte Obergrenze je Durchlauf. */

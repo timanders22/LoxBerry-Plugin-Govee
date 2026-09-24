@@ -89,6 +89,9 @@ gv_wurzel_suchen() {
     done
     return 1
 }
+# Was der Aufrufer als Wurzel nennt, bevor LBHOMEDIR unten ersetzt wird -
+# gebraucht fuer die Gegenprobe "ausdruecklich genannt".
+GV_UMGEBUNG_HOME="${LBHOMEDIR:-}"
 if [ -n "${LBHOMEDIR:-}" ] && [ -d "$LBHOMEDIR/config/plugins" ] \
    && [ -d "$LBHOMEDIR/data/plugins" ]; then
     LBHOMEDIR=$(cd "$LBHOMEDIR" && pwd -P)
@@ -118,19 +121,31 @@ PNAME="${PNAME##*/}"
 [ -n "$PNAME" ] || PNAME=$(basename "$SELF")
 PBIN="$LBHOMEDIR/bin/plugins/$PNAME"
 
-# Die Gegenprobe steht VOR allem, was schreibt (Vorbild Dashboard 0.9.22):
-# liegt dieses Skript nicht im bin-Ordner der Anlage, und ist <ordner> dort
-# auch kein eingerichtetes Plugin, dann kommt der Aufruf aus einem
-# ausgepackten Archiv oder einem Pruefordner - es wird nichts angelegt und
-# nichts angefasst (Faelle H1, H4, H5, H8, H10 - auch 'stop' mit nur gesetztem
-# LBHOMEDIR sagt ab, statt "laeuft nicht" zu melden). 'selbsttest' ist
-# ausgenommen (Fall H11): er prueft das Skript neben dieser Datei und braucht
-# die Anlage nicht.
+# Die Gegenprobe steht VOR allem, was schreibt (Vorbild Dashboard 0.9.22,
+# Spotpreis-Tibber 0.9.19): die Anlage gilt nur, wenn dieses Skript in ihrem
+# bin-Ordner liegt oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt
+# ($LBHOMEDIR und $LBPPLUGINDIR, und <ordner> ist dort eingerichtet) -
+# dieselbe Regel wie gv_paths() in gv_lib.php. Sonst kommt der Aufruf aus
+# einem ausgepackten Archiv oder einem Pruefordner - es wird nichts angelegt
+# und nichts angefasst (Faelle H1, H4, H5, H8, H10 in Pruefung-Govee-0.9.20 -
+# auch 'stop' mit nur gesetztem LBHOMEDIR sagt ab, statt "laeuft nicht" zu
+# melden). Bis 0.9.20 genuegte ein eingerichtetes <ordner> unter der
+# GEFUNDENEN Wurzel: ein Pruefarchiv unter der Wurzel mit $LBPPLUGINDIR allein
+# hielt mit 'stop' den Dienst der Anlage an und nahm ihr soll_laufen (in WSL
+# gemessen, Pruefung-Govee-0.9.21, Fall B9). 'selbsttest' ist ausgenommen
+# (Fall H11): er prueft das Skript neben dieser Datei und braucht die Anlage
+# nicht.
+GV_AUSDRUECKLICH=0
+if [ -n "${LBPPLUGINDIR:-}" ] && [ -n "$GV_UMGEBUNG_HOME" ] \
+   && [ "$LBHOMEDIR" = "$(cd "$GV_UMGEBUNG_HOME" 2>/dev/null && pwd -P)" ] \
+   && [ -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
+    GV_AUSDRUECKLICH=1
+fi
 if [ "$1" != "selbsttest" ] \
    && [ "$SELF" != "$(readlink -f "$PBIN" 2>/dev/null)" ] \
-   && [ ! -d "$LBHOMEDIR/config/plugins/$PNAME" ]; then
-    echo "FEHLER: '$PNAME' ist unter $LBHOMEDIR kein eingerichtetes Plugin,"
-    echo "        und $SELF ist nicht dessen bin-Ordner."
+   && [ "$GV_AUSDRUECKLICH" != "1" ]; then
+    echo "FEHLER: $SELF ist nicht der bin-Ordner von '$PNAME' unter $LBHOMEDIR,"
+    echo "        und LBHOMEDIR und LBPPLUGINDIR nennen die Anlage nicht beide."
     echo "        Der Aufruf kommt offenbar aus einem ausgepackten Archiv oder"
     echo "        einem Pruefordner. Es wurde nichts angelegt."
     echo "        Abhilfe: LBHOMEDIR und LBPPLUGINDIR setzen oder dienst.sh"
@@ -198,6 +213,11 @@ laeuft() {
     # und das erste ist ein PHP - "nano <pfad>/govee_dienst.php" fuehrt den
     # Pfad sonst ebenfalls als zweites Argument.
     ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    # Genau zwei Argumente: ein Einmallauf wie 'php <dienst> --einmal' ist
+    # kein Dienst (Regeln/06). Bis 0.9.20 meldete 'status' ihn als laufenden
+    # Dienst, und 'stop' beendete ihn (in WSL gemessen,
+    # Pruefung-Govee-0.9.21, Faelle D2/D3).
+    [ -z "$(echo "$ARGS" | sed -n '3p')" ] || return 1
     [ "$(echo "$ARGS" | sed -n '2p')" = "$SKRIPT" ] || return 1
     echo "$ARGS" | sed -n '1p' | grep -qE '(^|/)php[0-9.]*$' || return 1
     return 0
@@ -216,6 +236,9 @@ ist_dienst() {   # $1 PID
     [ -n "$ROH" ] || return 1
     A0=$(printf '%s\n' "$ROH" | sed -n '1p')
     A1=$(printf '%s\n' "$ROH" | sed -n '2p')
+    # Kein drittes Argument - ein Einmallauf mit einem Schalter wie --einmal
+    # ist kein Dienst (Regeln/06; Pruefung-Govee-0.9.21, Fall D1).
+    [ -z "$(printf '%s\n' "$ROH" | sed -n '3p')" ] || return 1
     [ -n "$A0" ] && [ -n "$A1" ] || return 1
     case "${A0##*/}" in php|php[0-9.]*) ;; *) return 1 ;; esac
     case "$A1" in

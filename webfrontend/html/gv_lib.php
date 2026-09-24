@@ -113,14 +113,27 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     }
 }
 
+/* Die Wurzel: $LBHOMEDIR, wenn dort config/plugins und data/plugins liegen,
+ * sonst die Suche von hier aufwaerts (lb_wurzel_ermitteln, mit general.json).
+ * Findet sie nichts, gibt es KEINE Wurzel. Bauart tb_lbhome() aus
+ * Spotpreis-Tibber 0.9.19. */
+function gv_lbhome()
+{
+    $h = getenv('LBHOMEDIR');
+    if ($h && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')) {
+        return rtrim($h, '/');
+    }
+    return lb_wurzel_ermitteln();
+}
+
 function gv_paths()
 {
     static $p = null;
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home || !is_dir($home)) {
+    $home = gv_lbhome();
+    if ($home === '') {
         /* Ohne brauchbares LBHOMEDIR nur noch die Suche; findet sie nichts,
          * gibt es KEINE Wurzel (home leer, Archivmodus weiter unten).
          *
@@ -133,7 +146,6 @@ function gv_paths()
          * Bibliothek die Konfiguration eines Baums unter
          * /home/loxberry/loxberry und schrieb dort aus dessen Zweitschrift eine
          * govee.json. */
-        $home = lb_wurzel_ermitteln();
     }
     /* Der Pluginordner ergibt sich aus dem Ablageort dieser Datei. Der
      * MD5-Schluessel aus der plugindatabase.json wird bewusst NICHT benutzt -
@@ -151,15 +163,46 @@ function gv_paths()
      * Der feste Name greift nur noch dort, wo der ermittelte nachweislich kein
      * Plugin-Ordner sein kann: aus dem ausgepackten Archiv heraus heisst er
      * "html". */
-    $lbp = getenv('LBPPLUGINDIR');
-    if ($lbp) {
+    /* Von LBPPLUGINDIR zaehlt nur der letzte Pfadteil, und die Namen, die
+     * nachweislich kein Pluginordner sind, gelten auch dort nicht (Bauart
+     * VolkswagenID 0.9.24, Spotpreis-Tibber 0.9.19). */
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp, array('.', '/', 'html', 'bin', 'plugins'), true));
+    if ($lbp_gilt) {
         $dir = $lbp;
-    } elseif ($dir === '' || $dir === '.' || $dir === '/' || $dir === 'html') {
+    } elseif ($dir === '' || $dir === '.' || $dir === '/'
+              || $dir === 'html' || $dir === 'bin' || $dir === 'plugins') {
         $dir = 'govee';
     }
-    if ($home) {
+    /* Archivmodus. Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort
+     * installiert liegt (<Wurzel>/webfrontend/html/plugins/<ordner>, physisch
+     * verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt
+     * ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit ihrer
+     * Attrappe, und so verwaltet bin/dienst.sh aus einem Archiv heraus die
+     * Anlage). Sonst ist das ein ausgepacktes Archiv oder ein Pruefordner:
+     * alles bleibt in dessen eigenem Ordner, und bin/govee_dienst.php steigt
+     * aus (gv_keine_wurzel_abbruch()).
+     *
+     * Bis 0.9.20 nahm ein Archiv unterhalb einer echten Wurzel diese Wurzel
+     * und den festen Namen 'govee' - Konfiguration, Warteschlange, Daten und
+     * Protokoll der Anlage; mit $LBHOMEDIR allein, wie es am Geraet in
+     * /etc/environment steht, ebenso (in WSL gemessen, Pruefung-Govee-0.9.21,
+     * Faelle B1, B2, B6, B7). Bauart wie tb_paths() in Spotpreis-Tibber
+     * 0.9.19. */
+    $gefunden = $home;
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/html/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if (!$installiert && !$ausdruecklich) {
+            $home = '';
+        }
+    }
+    if ($home !== '') {
         $p = array(
             'home'      => $home,
+            'archiv'    => '',
             'plugin'    => $dir,
             'configdir' => $home . '/config/plugins/' . $dir,
             'config'    => $home . '/config/plugins/' . $dir . '/govee.json',
@@ -174,6 +217,9 @@ function gv_paths()
         $basis = dirname(dirname(__DIR__));
         $p = array(
             'home'      => '',
+            /* Die gefundene Wurzel, wenn diese Datei NICHT darin installiert
+             * liegt (Archivmodus) - fuer die Meldung; sonst leer. */
+            'archiv'    => $gefunden,
             'plugin'    => $dir,
             'configdir' => $basis . '/config',
             'config'    => $basis . '/config/govee.json',
@@ -186,6 +232,32 @@ function gv_paths()
         );
     }
     return $p;
+}
+
+/* Fuer bin/govee_dienst.php: ohne Wurzel, oder aus einem ausgepackten
+ * Archiv heraus, nichts tun - eine Fehlermeldung auf stderr, Rueckgabewert 1.
+ * Der Aufruf steht dort VOR allem, was schreibt oder einen Port bindet.
+ * Bauart tb_keine_wurzel_abbruch() aus Spotpreis-Tibber 0.9.19. */
+function gv_keine_wurzel_abbruch($programm)
+{
+    $p = gv_paths();
+    if ($p['home'] !== '') {
+        return;
+    }
+    if ($p['archiv'] !== '') {
+        fwrite(STDERR, $programm . ': Diese Datei liegt nicht in der Installation unter '
+            . $p['archiv'] . "\n"
+            . '(ausgepacktes Archiv oder Pruefordner). Damit nichts in die Anlage kommt,' . "\n"
+            . 'wurde nichts abgefragt, nichts gesendet und nichts geschrieben.' . "\n"
+            . 'Abhilfe: das Programm aus ' . $p['archiv'] . '/bin/plugins/<ordner> aufrufen' . "\n"
+            . 'oder LBHOMEDIR und LBPPLUGINDIR ausdruecklich setzen.' . "\n");
+        exit(1);
+    }
+    fwrite(STDERR, $programm . ': Es wurde kein LoxBerry-Wurzelverzeichnis gefunden.' . "\n"
+        . '$LBHOMEDIR ist nicht gesetzt, und oberhalb von ' . __DIR__ . ' traegt kein' . "\n"
+        . 'Verzeichnis config/plugins, webfrontend und config/system/general.json.' . "\n"
+        . 'Es wurde nichts abgefragt, nichts gesendet und nichts geschrieben.' . "\n");
+    exit(1);
 }
 
 /* ==================================================================
@@ -774,8 +846,17 @@ function gv_dienst_pid()
      * (Bestand-2026-09-18/klasse-F, 18.09.2026). */
     $erwartet = gv_paths()['bindir'] . '/govee_dienst.php';
     $roh = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-    $args = explode("\0", $roh);
+    /* Das abschliessende Nullbyte abschneiden, sonst zaehlte es als leeres
+     * letztes Argument. */
+    $args = explode("\0", rtrim($roh, "\0"));
     if (!isset($args[1]) || $args[1] === '') {
+        return 0;
+    }
+    /* Genau zwei Argumente: ein Einmallauf wie 'php <dienst> --einmal' ist
+     * kein Dienst (Regeln/06, argumentweise Erkennung). Bis 0.9.20 zeigte die
+     * Oberflaeche ihn mit seiner Nummer als laufenden Dienst (in WSL gemessen,
+     * Pruefung-Govee-0.9.21, Fall D6). */
+    if (count($args) > 2) {
         return 0;
     }
     if (!preg_match('#(^|/)php[0-9.]*$#', isset($args[0]) ? $args[0] : '')) {
@@ -891,6 +972,17 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
     }
     $wartezeit = max(0, min(GV_WARTEN_WEB, (int) $wartezeit));
 
+    /* Ohne laufenden Dienst wird nichts eingereiht - dieselbe Absage wie am
+     * Endpunkt (webfrontend/html/index.php, 503). Bis 0.9.20 reihten die
+     * Schaltknoepfe des Reiters Test auch ohne Dienst ein: die Seite wartete,
+     * meldete "Eingereiht", und der Auftrag blieb liegen, bis irgendwann ein
+     * Dienst startete und die Leuchte ungefragt schaltete (in WSL gemessen,
+     * Pruefung-Govee-0.9.21, Faelle K1/K2). Vorbild BatterieBMS 0.9.25 und
+     * ZendureSolarFlow 0.9.26 (Entscheidung des Hausherrn 18.09.2026). */
+    if (gv_dienst_pid() === 0) {
+        return array(0, gv_t('TEST.M_DIENST_LAEUFT_NICHT'));
+    }
+
     $ordner = $p['datadir'] . '/befehle';
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
@@ -905,6 +997,13 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
      * Warteschlange. Der Dienst faende dort einen Befehl, den er nicht deuten
      * kann. Deshalb zuerst kodieren und den Rueckgabewert ansehen - so, wie
      * gv_json_schreiben() es schon immer tut. */
+    /* Wann er eingereiht wurde - der Dienst verwirft daran beim Start alte
+     * Auftraege (gv_alte_befehle_verwerfen() in bin/govee_dienst.php). Ohne
+     * diese Angabe bliebe nur filemtime(), und das ueberlebt ein Kopieren oder
+     * Zuruecksichern des Datenordners nicht (Fall K3). */
+    if (!isset($befehl['ts'])) {
+        $befehl['ts'] = time();
+    }
     $gv_js = json_encode($befehl);
     if ($gv_js === false) {
         return array(0, 'Der Befehl liess sich nicht als JSON darstellen (ungueltiges UTF-8).');
@@ -2938,8 +3037,8 @@ function gv_vorlage_eingang_alle()
  * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini immer
  * vollstaendig sein.
  *
- * Die Funktion setzt kein gv_paths() voraus, damit derselbe Block in jedes
- * Plugin passt. Der Pfad wird zweistufig gesucht:
+ * Die Wurzel kommt seit 0.9.21 aus gv_paths() (siehe gv_t()). Der Pfad wird
+ * zweistufig gesucht:
  *   installiert: <home>/templates/plugins/<ordner>/lang
  *   Archiv:      <pluginwurzel>/templates/lang
  * ================================================================== */
@@ -2960,16 +3059,20 @@ function gv_t($schluessel)
 {
     static $texte = null;
     if ($texte === null) {
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            /* Wie in gv_paths(): ohne festen Pfad dahinter (bis 0.9.19
-             * '/home/loxberry/loxberry' - lud die Sprachdatei eines fremden
-             * Baums, Fall B4 in Pruefung-Govee-0.9.20/messe_h2.sh). */
-            $home = lb_wurzel_ermitteln();
-        }
+        /* Dieselbe Wurzelregel wie gv_paths(), und die Wurzel kommt von
+         * dort - damit bleibt auch ein Archiv unter einer echten Wurzel im
+         * eigenen Ordner. Ohne festen Pfad (bis 0.9.19 '/home/loxberry/loxberry'
+         * - lud die Sprachdatei eines fremden Baums, Fall B4 in
+         * Pruefung-Govee-0.9.20/messe_h2.sh).
+         *
+         * Ohne Wurzel NICHTS ab der Laufwerkswurzel: bis 0.9.20 hiess das
+         * '' . '/templates/plugins/html/lang', und was dort lag, galt vor den
+         * eigenen Sprachdateien (in WSL gemessen, Pruefung-Govee-0.9.21,
+         * Fall C1; dieselbe Stelle wie tb_t() in Spotpreis-Tibber 0.9.19). */
+        $home = gv_paths()['home'];
         $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }
         $texte = @parse_ini_file($pfad . '/language_' . gv_sprache() . '.ini', true, INI_SCANNER_RAW);

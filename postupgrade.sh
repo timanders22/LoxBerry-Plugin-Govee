@@ -7,13 +7,44 @@
 # allem, was darin nicht idempotent ist. Deshalb steht hier nur das, was
 # ausschliesslich nach einem Upgrade zu tun ist: den Dienst wieder starten,
 # wenn er vorher laufen sollte.
-SELF=$(cd "$(dirname "$0")" && pwd)
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
 BASE="${ARGV5:-$LBHOMEDIR}"
-if [ -z "$BASE" ] || [ ! -d "$BASE" ]; then
-    BASE=$(cd "$SELF/../.." 2>/dev/null && pwd)
+
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.20 stand hier als Rueckfall "$SELF/../.." ohne general.json: in
+# einem fremden Baum startete dieses Skript dessen dienst.sh und raeumte
+# dessen Upgrade-Marke ab (in WSL gemessen, Pruefung-Govee-0.9.21, Fall W2).
+# Gesucht wird wie in preupgrade.sh aufwaerts nach config/plugins,
+# data/plugins UND config/system/general.json (Regeln/06); ohne Wurzel wird
+# gewarnt statt vollzogen.
+gv_wurzel_suchen() {
+    gv_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    gv_i=0
+    while [ -n "$gv_v" ] && [ "$gv_v" != "/" ] && [ "$gv_i" -lt 8 ]; do
+        if [ -d "$gv_v/config/plugins" ] && [ -d "$gv_v/data/plugins" ] \
+           && [ -f "$gv_v/config/system/general.json" ]; then
+            echo "$gv_v"
+            return 0
+        fi
+        gv_v=$(dirname "$gv_v")
+        gv_i=$((gv_i + 1))
+    done
+    return 1
+}
+SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(gv_wurzel_suchen "$SELF") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von $SELF"
+    echo "<WARNING> traegt kein Verzeichnis config/plugins, data/plugins und"
+    echo "<WARNING> config/system/general.json. Es wurde kein Dienst gestartet"
+    echo "<WARNING> und nichts abgeraeumt."
+    exit 1
 fi
 
 # Der Merker liegt NEBEN dem Datenordner (siehe preupgrade.sh). Bis 0.9.15

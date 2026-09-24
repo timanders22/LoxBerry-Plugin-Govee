@@ -18,6 +18,43 @@ ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
 BASE="${ARGV5:-$LBHOMEDIR}"
 
+# ---------- Die Wurzel: GELESEN, nicht geraten ----------
+#
+# Bis 0.9.20 stand hier NUR die Zeile darueber - ohne Rueckfall und ohne
+# Pruefung. Bleiben $5 und $LBHOMEDIR leer, war BASE leer, und die naechsten
+# Zeilen legten /data/plugins/<ordner>.upgrade_laeuft ab der LAUFWERKSWURZEL
+# an (in WSL gemessen, Pruefung-Govee-0.9.21, Fall W4). Gesucht wird
+# aufwaerts nach config/plugins, data/plugins UND config/system/general.json
+# (Regeln/06); ohne Wurzel wird gewarnt statt vollzogen. Bauart VolkswagenID
+# 0.9.24; dieselbe Suche steht in postinstall.sh, postupgrade.sh und
+# uninstall/uninstall.
+gv_wurzel_suchen() {
+    gv_v=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    gv_i=0
+    while [ -n "$gv_v" ] && [ "$gv_v" != "/" ] && [ "$gv_i" -lt 8 ]; do
+        if [ -d "$gv_v/config/plugins" ] && [ -d "$gv_v/data/plugins" ] \
+           && [ -f "$gv_v/config/system/general.json" ]; then
+            echo "$gv_v"
+            return 0
+        fi
+        gv_v=$(dirname "$gv_v")
+        gv_i=$((gv_i + 1))
+    done
+    return 1
+}
+SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+    BASE=$(gv_wurzel_suchen "$SELF") || BASE=""
+fi
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Es wurde kein LoxBerry-Wurzelverzeichnis gefunden: weder als"
+    echo "<WARNING> fuenftes Argument noch in \$LBHOMEDIR, und oberhalb von $SELF"
+    echo "<WARNING> traegt kein Verzeichnis config/plugins, data/plugins und"
+    echo "<WARNING> config/system/general.json. Es wurde nichts angelegt, nichts"
+    echo "<WARNING> gesichert und kein Dienst angehalten."
+    exit 1
+fi
+
 # ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
 # Sie steht VOR allem anderen, damit sie auch dann liegt, wenn weiter unten
 # etwas schiefgeht. Der Installer legt die Cron-Datei rund eine Minute vor
@@ -98,6 +135,11 @@ gv_ist_dienst() {   # $1 PID, $2 Dienstpfad, $3 UID ("" = Benutzer nicht pruefen
     [ -n "$gv_roh" ] || return 1
     gv_a0=$(printf '%s\n' "$gv_roh" | sed -n '1p')
     gv_a1=$(printf '%s\n' "$gv_roh" | sed -n '2p')
+    # Genau zwei Argumente: ein Einmallauf wie 'php <dienst> --einmal' oder
+    # '--selbsttest' ist kein Dienst (Regeln/06, argumentweise Erkennung).
+    # Bis 0.9.20 wurde er hier beendet (in WSL gemessen,
+    # Pruefung-Govee-0.9.21, Faelle D4/D5).
+    [ -z "$(printf '%s\n' "$gv_roh" | sed -n '3p')" ] || return 1
     [ -n "$gv_a0" ] && [ -n "$gv_a1" ] || return 1
     case "${gv_a0##*/}" in php|php[0-9.]*) ;; *) return 1 ;; esac
     # Ein relativer Pfad wird gegen das Arbeitsverzeichnis des Prozesses
@@ -174,12 +216,72 @@ if [ -n "$WAISEN" ]; then
     echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $WAISEN)."
 fi
 
+# Traegt eine Datei INHALT? Rueckgabe 0 ja, 1 nein, 2 nicht pruefbar (kein php).
+#   config   lesbares JSON-Objekt mit Aktionstoken ODER mindestens einem Geraet
+#            ODER einem Wert, der von gv_vorgaben() der installierten
+#            Bibliothek abweicht (eigenes MQTT-Thema, Takt ...). Ohne die
+#            dritte Bedingung ging eine solche Einstellung beim Upgrade verloren
+#            (in WSL gemessen, Pruefung-Govee-0.9.21, Fall Z9; Rueckschritt
+#            klasse_g B1/E2). Fehlt die Bibliothek, ist das "nicht pruefbar".
+#   geraete  mindestens ein Geraet - "eingerichtet" fuer das Schlusswort in
+#            postinstall.sh; ein Token allein entsteht schon beim ersten
+#            Oeffnen der Oberflaeche
+#   geheim   nicht leerer Cloud-Schluessel
+# Nie nach Groesse entscheiden (Muster 9 der Nachlese 24.09.2026; Klasse C,
+# Bestand-2026-09-18/klasse-C/Ergebnis.md). Wortgleich in preupgrade.sh und
+# postinstall.sh; Bauart sp_inhalt() aus Spotpreis-aWATTar 1.2.28.
+gv_inhalt() {   # $1 Datei, $2 Art
+    [ -s "$1" ] || return 1
+    command -v php >/dev/null 2>&1 || return 2
+    php -d allow_url_fopen=0 -r '$d = json_decode((string) @file_get_contents($argv[1]), true);
+        if (!is_array($d)) { exit(1); }
+        $t = isset($d["aktionstoken"]) && is_string($d["aktionstoken"]) && trim($d["aktionstoken"]) !== "";
+        $g = isset($d["geraete"]) && is_array($d["geraete"]) && count($d["geraete"]) > 0;
+        $k = isset($d["cloud_key"]) && is_string($d["cloud_key"]) && trim($d["cloud_key"]) !== "";
+        if ($argv[2] === "geheim") { exit($k ? 0 : 1); }
+        if ($argv[2] === "geraete") { exit($g ? 0 : 1); }
+        if ($t || $g) { exit(0); }
+        if (!is_file($argv[3])) { exit(3); }
+        require $argv[3];
+        if (!function_exists("gv_vorgaben")) { exit(3); }
+        foreach (gv_vorgaben() as $s => $v) {
+            if (array_key_exists($s, $d) && $d[$s] != $v) { exit(0); }
+        }
+        exit(1);' "$1" "$2" "$BASE/webfrontend/html/plugins/$PFOLDER/gv_lib.php" >/dev/null 2>&1
+    gv_irc=$?
+    [ "$gv_irc" = 0 ] || [ "$gv_irc" = 1 ] || return 2
+    return "$gv_irc"
+}
+
+# Gesichert wird nur, was INHALT traegt. Bis 0.9.20 ueberschrieb jede
+# govee.json die Zweitschrift - auch "{}" oder eine abgeschnittene Datei -, und
+# geheim.json wurde nach Groesse gesichert: ein leerer Cloud-Schluessel
+# ueberschrieb die gute Sicherung (in WSL gemessen, Pruefung-Govee-0.9.21,
+# Faelle Z1/Z2). Eine Datei ohne Inhalt laesst die vorhandene Sicherung
+# unberuehrt; ist der Inhalt nicht pruefbar, wird nur gesichert, wo noch
+# keine Sicherung liegt.
+gv_sichern() {   # $1 Datei, $2 Sicherung, $3 Art (config|geheim), $4 Name fuer die Meldung
+    [ -f "$1" ] || return 0
+    gv_inhalt "$1" "$3"
+    case $? in
+        0)  if cp -p "$1" "$2" 2>/dev/null; then
+                chmod 600 "$2" 2>/dev/null
+                echo "<OK> $4 gesichert."
+            else
+                echo "<WARNING> $4 liess sich nicht sichern ($2)."
+            fi ;;
+        1)  if [ -f "$2" ]; then
+                echo "<INFO> $(basename "$1") traegt keine Einstellungen - die vorhandene Sicherung bleibt unberuehrt."
+            fi ;;
+        *)  echo "<WARNING> Der Inhalt von $(basename "$1") liess sich nicht pruefen (php fehlt) -"
+            echo "<WARNING> eine vorhandene Sicherung bleibt unberuehrt."
+            if [ ! -f "$2" ] && cp -p "$1" "$2" 2>/dev/null; then
+                chmod 600 "$2" 2>/dev/null
+            fi ;;
+    esac
+}
 CF="$BASE/config/plugins/$PFOLDER/govee.json"
-if [ -f "$CF" ]; then
-    cp -p "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" \
-        && chmod 600 "$BASE/config/plugins/$PFOLDER.backup.json" 2>/dev/null \
-        && echo "<OK> Konfiguration gesichert."
-fi
+gv_sichern "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" config "Konfiguration"
 # Die Datei mit dem Cloud-Schluessel WIRD neben den Ordner gesichert - und
 # das war bis 0.9.8 anders begruendet. Hier stand, sie werde bewusst nicht
 # gesichert, weil eine Sicherung daneben die Deinstallation ueberlebt und dort
@@ -206,17 +308,14 @@ echo "<OK> preupgrade abgeschlossen."
 # <ordner>.backup.geheim.json -, von denen eine wie die Kurzform der anderen
 # aussah. Die Konfiguration ist oben schon nach <ordner>.backup.json gesichert;
 # ein zweites Mal unter anderem Namen bringt nichts und kostet Verwechslung.
-NETZ_BASE="${5:-$LBHOMEDIR}"
-NETZ_PDIR="${3:-govee}"
+NETZ_BASE="$BASE"
+NETZ_PDIR="$PFOLDER"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 
 
 # NICHT MITGELIEFERTE Dateien - und gerade deshalb die wichtigen.
 # Das Archiv liefert sie nie, also standen sie bis jetzt auf keiner Liste;
 # geloescht werden sie vom Installer trotzdem, samt Token und Zugangsdaten.
-if [ -s "$NETZ_CFG/geheim.json" ]; then
-    cp -p "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" 2>/dev/null
-fi
+gv_sichern "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" geheim "Cloud-Schluessel"
 
 exit 0
