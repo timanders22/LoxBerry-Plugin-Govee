@@ -22,10 +22,14 @@ function gv_pruefungen()
     $werte = gv_werte();
     $zeilen = array();
 
+    /* Ob der Dienst laeuft, sagt seine Sperre, nicht die PID-Datei (C3):
+     * nach einem Doppelstart lief er ohne PID-Datei, und diese Zeile meldete
+     * "angehalten" (govee_agenten/code, Befund 2). Die PID steht nur dabei. */
+    $laeuft = gv_dienst_laeuft();
     $pid = gv_dienst_pid();
-    $zeilen[] = gv_pruefzeile($pid > 0 ? 1 : 0, gv_t('TEST.F_DIENST'),
-        $pid > 0 ? gv_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid
-                 : (gv_dienst_soll() ? gv_t('TEST.A_DIENST_SOLL_TOT') : gv_t('TEST.A_DIENST_GESTOPPT')));
+    $zeilen[] = gv_pruefzeile($laeuft ? 1 : 0, gv_t('TEST.F_DIENST'),
+        $laeuft ? ($pid > 0 ? gv_t('TEST.A_DIENST_LAEUFT') . ' ' . $pid : gv_t('TEST.A_DIENST_LAEUFT_OHNE_PID'))
+                : (gv_dienst_soll() ? gv_t('TEST.A_DIENST_SOLL_TOT') : gv_t('TEST.A_DIENST_GESTOPPT')));
 
     /* Laeuft gerade eine Aktualisierung? Solange die Marke liegt, weist
      * bin/dienst.sh jeden Start ab - auch den ueber die Knoepfe im Reiter
@@ -51,7 +55,7 @@ function gv_pruefungen()
      * zustand.json, das der Dienst in jeder Runde neu schreibt. */
     $lz = gv_dienst_lebenszeichen();
     $grenze = gv_altersgrenze($cfg);
-    if ($pid === 0) {
+    if (!$laeuft) {
         /* Ueber den Herzschlag eines Dienstes zu urteilen, der gar nicht
          * laeuft, ergibt ein Kreuz, das nichts bedeutet - den Grund nennt
          * schon die Zeile darueber. */
@@ -75,16 +79,14 @@ function gv_pruefungen()
     /* Der Antwortport ist der Dreh- und Angelpunkt. Ist er frei, obwohl der
      * Dienst laufen soll, hoert niemand zu - dann bleibt jede Statusabfrage
      * ohne Ergebnis, und zwar lautlos. */
-    if ($pid > 0) {
+    /* Ein Probebinden sagt nichts: UDP 4002 laesst sich neben dem Dienst ein
+     * zweites Mal binden, und bis 0.9.22 meldete diese Zeile deshalb "Port
+     * frei", waehrend ein Dienst ohne PID-Datei ihn hielt (C3,
+     * govee_agenten/code Befund 3). Gefragt wird nur noch die Sperre. */
+    if ($laeuft) {
         $zeilen[] = gv_pruefzeile(1, gv_t('TEST.F_PORT'), sprintf(gv_t('TEST.A_PORT_DIENST'), GV_PORT_ANTWORT));
     } else {
-        list($h, $meldung) = gv_antwortport_oeffnen();
-        if ($h !== null) {
-            fclose($h);
-            $zeilen[] = gv_pruefzeile(-1, gv_t('TEST.F_PORT'), sprintf(gv_t('TEST.A_PORT_FREI'), GV_PORT_ANTWORT));
-        } else {
-            $zeilen[] = gv_pruefzeile(0, gv_t('TEST.F_PORT'), gv_e($meldung));
-        }
+        $zeilen[] = gv_pruefzeile(-1, gv_t('TEST.F_PORT'), sprintf(gv_t('TEST.A_PORT_FREI'), GV_PORT_ANTWORT));
     }
 
     /* Der Nachbau der ptReal-Befehle - ohne Netz und ohne Geraet pruefbar. */
@@ -219,30 +221,10 @@ function gv_pruefungen()
     $zeilen[] = gv_pruefzeile(!empty($cfg['pt_frei']) ? -1 : 1, gv_t('TEST.F_PTFREI'),
         !empty($cfg['pt_frei']) ? gv_t('TEST.A_PTFREI_EIN') : gv_t('TEST.A_PTFREI_AUS'));
 
-    /* Traegt jedes Formular das Merkmal gegen fremde Absender?
-     *
-     * Gezaehlt wird in der eigenen Datei, nicht im Kopf: ein neues Formular
-     * ohne das Feld faellt sonst erst dem auf, der darauf klickt - und der
-     * bekommt dann eine Beanstandung, die er sich nicht erklaeren kann.
-     * Die Zahl der angesehenen Stellen steht in der Antwort, damit eine Null
-     * nicht wie "in Ordnung" aussieht. */
-    $eigene = __DIR__ . '/index.php';
-    $quelle = is_file($eigene) ? (string) @file_get_contents($eigene) : '';
-    if ($quelle === '') {
-        $zeilen[] = gv_pruefzeile(-1, gv_t('TEST.F_FORMULAR'), gv_t('TEST.A_FORMULAR_UNBEKANNT'));
-    } else {
-        $formulare = substr_count($quelle, '<form action="index.php" method="post"');
-        $merkmale = substr_count($quelle, 'name="fmt" value=');
-        if ($formulare === 0) {
-            $zeilen[] = gv_pruefzeile(-1, gv_t('TEST.F_FORMULAR'), gv_t('TEST.A_FORMULAR_UNBEKANNT'));
-        } elseif ($formulare === $merkmale) {
-            $zeilen[] = gv_pruefzeile(1, gv_t('TEST.F_FORMULAR'),
-                sprintf(gv_t('TEST.A_FORMULAR_OK'), $formulare));
-        } else {
-            $zeilen[] = gv_pruefzeile(0, gv_t('TEST.F_FORMULAR'),
-                sprintf(gv_t('TEST.A_FORMULAR_FEHL'), $formulare - $merkmale, $formulare));
-        }
-    }
+    /* Traegt jedes Formular das Merkmal gegen fremde Absender - als
+     * vollstaendiges Feld - und hat jedes Formular zum Hochladen sein
+     * Dateifeld? Gelesen wird die eigene Datei (gv_pruefzeile_formulare()). */
+    $zeilen[] = gv_pruefzeile_formulare();
 
     $zeilen[] = gv_pruefzeile_reiter();
     $zeilen[] = gv_pruefzeile_themen();
@@ -309,41 +291,245 @@ function gv_pruefzeile_reiter()
 }
 
 /**
- * Die Themenliste gegen den Sendecode halten.
+ * Formulare der eigenen Oberflaeche pruefen (U2): traegt jedes das Merkmal
+ * gegen fremde Absender als VOLLSTAENDIGES Feld, und hat jedes
+ * multipart-Formular ein Dateifeld?
  *
- * gv_mqtt_themen() ist die Anleitung im Reiter MQTT, veroeffentlicht wird an
- * ganz anderer Stelle im Dienst. Nichts mass die beiden gegeneinander - und
- * genau so ist beim Waermepumpen-Plugin ALTER aus MQTT verschwunden, waehrend
- * die Tabelle es weiter auffuehrte.
+ * Bis 0.9.22 zaehlte diese Zeile nur, wie oft das Feld fmt mit einem Wert im Quelltext steht, und
+ * zeigte einen gruenen Haken, waehrend dem Merkmal im Formular
+ * "Zurueckspielen" das schliessende "> fehlte: das Dateifeld verschwand im
+ * Wert des versteckten Felds, und der Knopf hat nie gewirkt
+ * (govee_agenten/oberflaeche, Befunde 1 und 2). Jetzt wird die Datei so
+ * zerlegt, wie ein Browser sie liest (gv_formulare_pruefen()).
+ * $quelle nur fuer die Eichung; sonst wird index.php daneben gelesen.
  */
-function gv_pruefzeile_themen()
+function gv_pruefzeile_formulare($quelle = null)
 {
-    $p = gv_paths();
-    $dienst = $p['bindir'] . '/govee_dienst.php';
-    if (!is_file($dienst)) {
-        /* Aus dem entpackten Archiv heraus liegt er woanders. */
-        $dienst = dirname(dirname(__DIR__)) . '/bin/govee_dienst.php';
+    if ($quelle === null) {
+        $eigene = __DIR__ . '/index.php';
+        $quelle = is_file($eigene) ? (string) @file_get_contents($eigene) : '';
     }
-    $quelle = is_file($dienst) ? (string) @file_get_contents($dienst) : '';
     if ($quelle === '') {
-        return gv_pruefzeile(-1, gv_t('TEST.F_THEMEN'), gv_t('TEST.A_THEMEN_UNBEKANNT'));
+        return gv_pruefzeile(-1, gv_t('TEST.F_FORMULAR'), gv_t('TEST.A_FORMULAR_UNBEKANNT'));
     }
-    $fehlt = array();
-    foreach (array_keys(gv_mqtt_themen()) as $thema) {
-        /* geraetN/x wird im Code als $pfx . 'x' gebaut. */
-        $suche = (strpos($thema, 'geraetN/') === 0)
-            ? "'" . substr($thema, 8) . "'"
-            : "'" . $thema . "'";
-        if (strpos($quelle, $suche) === false) {
-            $fehlt[] = $thema;
+    list($formulare, $maengel) = gv_formulare_pruefen($quelle);
+    if ($formulare === 0) {
+        /* Ueber eine leere Menge wird nicht geurteilt. */
+        return gv_pruefzeile(-1, gv_t('TEST.F_FORMULAR'), gv_t('TEST.A_FORMULAR_UNBEKANNT'));
+    }
+    if ($maengel) {
+        return gv_pruefzeile(0, gv_t('TEST.F_FORMULAR'),
+            sprintf(gv_t('TEST.A_FORMULAR_FEHL'), count($maengel), $formulare, gv_e(implode('; ', $maengel))));
+    }
+    return gv_pruefzeile(1, gv_t('TEST.F_FORMULAR'), sprintf(gv_t('TEST.A_FORMULAR_OK'), $formulare));
+}
+
+/**
+ * Rueckgabe: array(Zahl der Formulare, Maengel[]). Die Ausgabe des Merkmals
+ * wird zu @@FMT@@, jede andere PHP-Stelle zu @@PHP@@; Kommentare, Skript
+ * und Stil fallen weg. Ein POST-Formular braucht genau ein Feld fmt mit
+ * genau diesem Wert - fehlt ihm das schliessende "> , frisst der Wert das
+ * naechste Tag und ist nicht mehr @@FMT@@.
+ */
+function gv_formulare_pruefen($quelle)
+{
+    $h = str_replace('<?= gv_e($gv_fmt) ?>', '@@FMT@@', (string) $quelle);
+    $h = preg_replace('/<\?(?:php|=).*?\?>/s', '@@PHP@@', $h);
+    $h = preg_replace('/<!--.*?-->/s', '', $h);
+    $h = preg_replace('#<(script|style)\b.*?</\1\s*>#is', '', $h);
+    $formulare = 0;
+    $maengel = array();
+    $offen = null;
+    $abschluss = function ($f) use (&$maengel) {
+        if ($f['post'] && $f['fmt'] === 0) {
+            $maengel[] = sprintf(gv_t('TEST.A_FORMULAR_M_FEHLT'), $f['nr']);
+        } elseif ($f['post'] && ($f['fmt'] !== 1 || $f['fmt_gut'] !== 1)) {
+            $maengel[] = sprintf(gv_t('TEST.A_FORMULAR_M_KAPUTT'), $f['nr']);
+        }
+        if ($f['multipart'] && $f['datei'] === 0) {
+            $maengel[] = sprintf(gv_t('TEST.A_FORMULAR_M_DATEI'), $f['nr']);
+        }
+    };
+    foreach (gv_html_tags($h) as $t) {
+        if ($t['name'] === 'form') {
+            if ($offen !== null) {
+                $abschluss($offen);
+            }
+            $formulare++;
+            $offen = array(
+                'nr'        => $formulare,
+                'post'      => isset($t['attr']['method']) && strtolower($t['attr']['method']) === 'post',
+                'multipart' => isset($t['attr']['enctype'])
+                               && strtolower($t['attr']['enctype']) === 'multipart/form-data',
+                'fmt'       => 0,
+                'fmt_gut'   => 0,
+                'datei'     => 0,
+            );
+        } elseif ($t['name'] === '/form') {
+            if ($offen !== null) {
+                $abschluss($offen);
+            }
+            $offen = null;
+        } elseif ($t['name'] === 'input' && $offen !== null) {
+            if (isset($t['attr']['name']) && $t['attr']['name'] === 'fmt') {
+                $offen['fmt']++;
+                if (isset($t['attr']['value']) && $t['attr']['value'] === '@@FMT@@') {
+                    $offen['fmt_gut']++;
+                }
+            }
+            if (isset($t['attr']['type']) && strtolower($t['attr']['type']) === 'file') {
+                $offen['datei']++;
+            }
         }
     }
-    $anzahl = count(gv_mqtt_themen());
-    if ($fehlt) {
-        return gv_pruefzeile(0, gv_t('TEST.F_THEMEN'),
-            sprintf(gv_t('TEST.A_THEMEN_FEHL'), gv_e(implode(', ', $fehlt)), $anzahl));
+    if ($offen !== null) {
+        $abschluss($offen);
     }
-    return gv_pruefzeile(1, gv_t('TEST.F_THEMEN'), sprintf(gv_t('TEST.A_THEMEN_OK'), $anzahl));
+    return array($formulare, $maengel);
+}
+
+/**
+ * Tags so zerlegen, wie ein Browser sie liest - so weit, wie die
+ * Formularpruefung es braucht: ein Tag beginnt mit < und einem Buchstaben
+ * oder /, ein Attributwert in "..." oder '...' darf < und > enthalten, das
+ * Tag endet am ersten > ausserhalb davon. Doppelte Attribute: das erste gilt.
+ * Rueckgabe: Liste von array('name' => 'input' | '/form' ..., 'attr' => ...).
+ */
+function gv_html_tags($h)
+{
+    $tags = array();
+    $n = strlen($h);
+    $i = 0;
+    while ($i < $n) {
+        $p = strpos($h, '<', $i);
+        if ($p === false || $p + 1 >= $n) {
+            break;
+        }
+        if (!preg_match('#[A-Za-z/]#', $h[$p + 1])) {
+            $i = $p + 1;
+            continue;
+        }
+        $j = $p + 1;
+        $zu = '';
+        if ($h[$j] === '/') {
+            $zu = '/';
+            $j++;
+        }
+        $name = '';
+        while ($j < $n && preg_match('/[A-Za-z0-9]/', $h[$j])) {
+            $name .= $h[$j];
+            $j++;
+        }
+        $attr = array();
+        while ($j < $n) {
+            while ($j < $n && strpos(" \t\r\n/", $h[$j]) !== false) {
+                $j++;
+            }
+            if ($j >= $n) {
+                break;
+            }
+            if ($h[$j] === '>') {
+                $j++;
+                break;
+            }
+            $an = '';
+            while ($j < $n && strpos(" \t\r\n/>=", $h[$j]) === false) {
+                $an .= $h[$j];
+                $j++;
+            }
+            while ($j < $n && strpos(" \t\r\n", $h[$j]) !== false) {
+                $j++;
+            }
+            $wert = '';
+            if ($j < $n && $h[$j] === '=') {
+                $j++;
+                while ($j < $n && strpos(" \t\r\n", $h[$j]) !== false) {
+                    $j++;
+                }
+                if ($j < $n && ($h[$j] === '"' || $h[$j] === "'")) {
+                    $ende = strpos($h, $h[$j], $j + 1);
+                    if ($ende === false) {
+                        $wert = (string) substr($h, $j + 1);
+                        $j = $n;
+                    } else {
+                        $wert = (string) substr($h, $j + 1, $ende - $j - 1);
+                        $j = $ende + 1;
+                    }
+                } else {
+                    while ($j < $n && strpos(" \t\r\n>", $h[$j]) === false) {
+                        $wert .= $h[$j];
+                        $j++;
+                    }
+                }
+            }
+            $an = strtolower($an);
+            if ($an !== '' && !array_key_exists($an, $attr)) {
+                $attr[$an] = $wert;
+            }
+        }
+        $tags[] = array('name' => $zu . strtolower($name), 'attr' => $attr);
+        $i = $j;
+    }
+    return $tags;
+}
+
+/**
+ * Die Themenliste gegen den Sendecode halten - in BEIDEN Richtungen (M4).
+ *
+ * Bis 0.9.22 suchte diese Zeile nur, ob 'hell' oder 'r' irgendwo in der
+ * Dienstdatei steht, und nur in einer Richtung: ohne hell, r, g und b in der
+ * Sendeschleife und mit einem zusaetzlichen Thema blieb sie gruen
+ * (govee_agenten/mqtt, Befund 4). Jetzt baut sie die Paare mit derselben
+ * Funktion, mit der der Dienst sendet (gv_mqtt_paare()), fuer ein Geraet,
+ * das jeden Wert liefert, und vergleicht die Themen mit gv_mqtt_themen().
+ * Dazu die Gegenprobe, dass der Dienst seine Paare wirklich dort baut.
+ * $dienst_quelle nur fuer die Eichung.
+ */
+function gv_pruefzeile_themen($dienst_quelle = null)
+{
+    if ($dienst_quelle === null) {
+        $p = gv_paths();
+        $dienst = $p['bindir'] . '/govee_dienst.php';
+        if (!is_file($dienst)) {
+            /* Aus dem entpackten Archiv heraus liegt er woanders. */
+            $dienst = dirname(dirname(__DIR__)) . '/bin/govee_dienst.php';
+        }
+        $dienst_quelle = is_file($dienst) ? (string) @file_get_contents($dienst) : '';
+    }
+    if ($dienst_quelle === '') {
+        return gv_pruefzeile(-1, gv_t('TEST.F_THEMEN'), gv_t('TEST.A_THEMEN_UNBEKANNT'));
+    }
+    if (strpos($dienst_quelle, 'gv_mqtt_paare(') === false) {
+        return gv_pruefzeile(0, gv_t('TEST.F_THEMEN'), gv_t('TEST.A_THEMEN_OHNE_BAUER'));
+    }
+    $jetzt = time();
+    $cfg = gv_vorgaben();
+    $probe = array(1 => array('name' => 'Probe', 'art' => 'lan', 'ts' => $jetzt, 'ok' => 1,
+        'fehl' => 0, 'an' => 1, 'hell' => 50, 'kelvin' => 3000, 'r' => 1, 'g' => 2, 'b' => 3,
+        'hex' => '010203'));
+    $gesendet = array();
+    foreach (array_keys(gv_mqtt_paare($probe, array('ok' => 1, 'geraete' => 1, 'fehler_folge' => 0),
+                                      $cfg, $jetzt)) as $k) {
+        $gesendet[preg_replace('#^geraet1/#', 'geraetN/', $k)] = true;
+    }
+    $tabelle = gv_mqtt_themen();
+    if (!$gesendet || !$tabelle) {
+        /* Ueber eine leere Menge wird nicht geurteilt. */
+        return gv_pruefzeile(-1, gv_t('TEST.F_THEMEN'), gv_t('TEST.A_THEMEN_UNBEKANNT'));
+    }
+    $fehlt = array_keys(array_diff_key($tabelle, $gesendet));
+    $extra = array_keys(array_diff_key($gesendet, $tabelle));
+    if ($fehlt || $extra) {
+        $teile = array();
+        if ($fehlt) {
+            $teile[] = sprintf(gv_t('TEST.A_THEMEN_FEHL'), gv_e(implode(', ', $fehlt)), count($tabelle));
+        }
+        if ($extra) {
+            $teile[] = sprintf(gv_t('TEST.A_THEMEN_ZUSATZ'), gv_e(implode(', ', $extra)));
+        }
+        return gv_pruefzeile(0, gv_t('TEST.F_THEMEN'), implode(' ', $teile));
+    }
+    return gv_pruefzeile(1, gv_t('TEST.F_THEMEN'), sprintf(gv_t('TEST.A_THEMEN_OK'), count($tabelle)));
 }
 
 /**
@@ -406,17 +592,13 @@ function gv_endpunkt_probe($erzwingen = false, $hoechstalter = 300)
          * der Code wurde fest mit 200 eingetragen, ohne je gelesen zu sein. */
         $kontext = stream_context_create(array('http' => array(
             'timeout' => 3, 'ignore_errors' => true)));
-        $http_response_header = array();
-        $antwort = @file_get_contents($adresse, false, $kontext);
+        /* Statuscode ueber gv_http_abruf() statt ueber die vordefinierte Variable der Kopfzeilen
+         * (C10): PHP 8.5 fuehrt die Variable als veraltet, und fiele sie weg,
+         * verdeckte die Vorbelegung das still - Code 0, "nicht
+         * feststellbar" (govee_agenten/code, ohne Befund geprueft). */
+        list($antwort, $gv_code) = gv_http_abruf($adresse, $kontext);
         $erg['text'] = ($antwort === false) ? '' : substr((string) $antwort, 0, 300);
-        $erg['code'] = 0;
-        if (is_array($http_response_header)) {
-            foreach ($http_response_header as $gv_kopf) {
-                if (preg_match('#^HTTP/[0-9.]+ +([0-9]{3})#', $gv_kopf, $gv_t)) {
-                    $erg['code'] = (int) $gv_t[1];
-                }
-            }
-        }
+        $erg['code'] = (int) $gv_code;
         $messbar = ($antwort !== false && $erg['code'] > 0);
     } else {
         $erg['lage'] = 'unbekannt';
@@ -532,7 +714,7 @@ function gv_test_aktion($aktion)
         case 'suche':
             /* Laeuft der Dienst, hat er den Antwortport - dann muss auch er
              * suchen. Laeuft er nicht, sucht die Oberflaeche selbst. */
-            if (gv_dienst_pid() > 0) {
+            if (gv_dienst_laeuft()) {
                 return gv_befehl_absetzen(array('aktion' => 'suche'), 8);
             }
             list($liste, $meldung) = gv_suche(3);
@@ -546,7 +728,7 @@ function gv_test_aktion($aktion)
                 : gv_t('TEST.M_NICHTS_GEFUNDEN'));
 
         case 'abruf':
-            if (gv_dienst_pid() > 0) {
+            if (gv_dienst_laeuft()) {
                 return gv_befehl_absetzen(array('aktion' => 'abruf'), 8);
             }
             $g = gv_geraet((int) $nr);

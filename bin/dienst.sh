@@ -212,7 +212,11 @@ laeuft() {
     # Geprueft werden zwei Dinge: das zweite Argument ist genau unser Skript,
     # und das erste ist ein PHP - "nano <pfad>/govee_dienst.php" fuehrt den
     # Pfad sonst ebenfalls als zweites Argument.
-    ARGS=$(tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null)
+    # cat statt Umlenkung (C7): scheitert die Umlenkung, weil der Prozess
+    # gerade endet, meldet die Schale das auf der Fehlerausgabe, bevor
+    # 2>/dev/null gilt - und gv_dienst() zeigt es in der Oberflaeche (in WSL
+    # gemessen, govee_agenten/code Befund 7: 8 von 20 stop). Wie ist_dienst().
+    ARGS=$(cat "/proc/$P/cmdline" 2>/dev/null | tr '\0' '\n')
     # Genau zwei Argumente: ein Einmallauf wie 'php <dienst> --einmal' ist
     # kein Dienst (Regeln/06). Bis 0.9.20 meldete 'status' ihn als laufenden
     # Dienst, und 'stop' beendete ihn (in WSL gemessen,
@@ -348,7 +352,9 @@ starten() {
     # dort schreibt allein das Programm selbst. Beim Start gekappt, damit sie
     # nur die Ausgabe EINES Laufes sammelt und nicht unbegrenzt waechst.
     : > "$STARTLOG"
-    nohup php "$SKRIPT" >> "$STARTLOG" 2>&1 &
+    # 8<&-: der Dienst erbt den Griff der Startsperre NICHT (C2, siehe
+    # sperren() unten).
+    nohup php "$SKRIPT" >> "$STARTLOG" 2>&1 8<&- &
     echo $! > "$PID"
     sleep 1
     if laeuft; then
@@ -356,8 +362,11 @@ starten() {
         return 0
     fi
     echo "FEHLER: Start fehlgeschlagen - siehe $STARTLOG und $LOGDATEI"
-    echo "Haeufigste Ursache: der UDP-Port 4002 ist schon belegt. Nur ein"
-    echo "Programm kann ihn halten, und die Govee-Leuchten antworten nur dorthin."
+    # Bis 0.9.22 stand hier "Haeufigste Ursache: der UDP-Port 4002 ist schon
+    # belegt" - eine Ursache, die den Start nie scheitern laesst: UDP 4002
+    # laesst sich ein zweites Mal binden (C3, govee_agenten/code Befund 3).
+    echo "Haelt schon ein anderer Govee-Dienst seine Sperre, steht in der Startdatei:"
+    echo "\"Es laeuft bereits ein Govee-Dienst\"."
     rm -f "$PID"
     return 1
 }
@@ -401,10 +410,32 @@ anhalten() {
     return 0
 }
 
+# Startsperre (C2, Durchgang 29.09.2026): start, stop, restart und der
+# Waechter laufen nacheinander, nie gleichzeitig. Bis 0.9.22 sahen zwei
+# gleichzeitige Starts (Knopf und Minutenwaechter, Doppelklick) beide "laeuft
+# nicht"; der zweite PHP-Prozess endete an der Sperre des Dienstes, seine PID
+# blieb in der PID-Datei stehen, beide Aufrufe meldeten einen Fehlschlag und
+# loeschten sie - der Dienst lief ohne PID-Datei weiter, und jeder
+# Schaltbefehl bekam 503 (in WSL gemessen, govee_agenten/code Befund 2: 10 und
+# 13 von 20 Runden). Gesperrt wird auf diesem Skript selbst; angelegt wird
+# nichts. Der Dienst erbt den Griff NICHT (8<&- an der nohup-Zeile), sonst
+# hielte er die Sperre, solange er laeuft, und jedes spaetere stop wartete
+# vergeblich (Regeln/03, Sperre vererbt sich an Kinder). 30 s, weil ein stop
+# mit hartem Beenden und Waisensuche gut 20 s dauern kann. Bauform
+# AnkerSolix 0.9.21 und Einspeisebremse 0.9.28.
+sperren() {
+    command -v flock >/dev/null 2>&1 || return 0
+    exec 8<"$(readlink -f "$0")" || return 0
+    if ! flock -w 30 8; then
+        echo "FEHLER: Ein anderer Aufruf von dienst.sh laeuft seit 30 s noch - abgebrochen."
+        exit 1
+    fi
+}
+
 case "$1" in
-    start)   starten ;;
-    stop)    anhalten ;;
-    restart) anhalten; sleep 1; starten ;;
+    start)   sperren; starten ;;
+    stop)    sperren; anhalten ;;
+    restart) sperren; anhalten; sleep 1; starten ;;
     status)
         if laeuft; then
             echo "laeuft $(cat "$PID")"
@@ -423,9 +454,14 @@ case "$1" in
         # Nur neu starten, wenn der Dienst laufen SOLL. Ein bewusst
         # angehaltener Dienst bleibt angehalten.
         if [ -f "$SOLL" ] && ! laeuft; then
-            ordner_anlegen
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
-            starten >> "$STARTLOG" 2>&1
+            sperren
+            # Nach dem Warten auf die Sperre neu fragen: ein gleichzeitiger
+            # Start oder Stopp kann die Lage geaendert haben (C2).
+            if [ -f "$SOLL" ] && ! laeuft; then
+                ordner_anlegen
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Waechter: Dienst lief nicht, wird neu gestartet." >> "$LOGDATEI"
+                starten >> "$STARTLOG" 2>&1
+            fi
         fi
         ;;
     *)

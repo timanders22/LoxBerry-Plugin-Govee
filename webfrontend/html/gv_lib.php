@@ -75,6 +75,43 @@ define('GV_MULTICAST',    '239.255.255.250');
 /* Adresse der offiziellen Entwicklerschnittstelle. */
 define('GV_CLOUD', 'https://openapi.api.govee.com');
 
+/* Die Fassung wird GELESEN, nicht eingetragen (C9, Durchgang 29.09.2026):
+ * bis 0.9.22 stand im User-Agent fest 0.9.9. Quelle wie bei LoxBerry selbst:
+ * die Plugin-Datenbank ueber den ORDNERNAMEN (Regeln/03; der MD5-Schluessel
+ * darin aendert sich mit Autor und Name), ersatzweise die plugin.cfg (nur im
+ * ausgepackten Archiv vorhanden), sonst leer - eine geratene Nummer waere
+ * schlechter als keine. Bauform wp_fassung() aus WaermepumpeCloud 0.9.25. */
+function gv_fassung()
+{
+    static $f = null;
+    if ($f !== null) {
+        return $f;
+    }
+    $f = '';
+    $p = gv_paths();
+    if ($p['home'] !== '') {
+        $db = $p['home'] . '/data/system/plugindatabase.json';
+        $d = is_file($db) ? json_decode((string) @file_get_contents($db), true) : null;
+        if (is_array($d) && isset($d['plugins']) && is_array($d['plugins'])) {
+            foreach ($d['plugins'] as $e) {
+                if (is_array($e) && isset($e['folder'], $e['version']) && $e['folder'] === $p['plugin']
+                    && is_scalar($e['version'])) {
+                    $f = trim((string) $e['version']);
+                    break;
+                }
+            }
+        }
+    }
+    if ($f === '') {
+        $k = dirname(dirname(__DIR__)) . '/plugin.cfg';
+        $roh = is_readable($k) ? (string) @file_get_contents($k) : '';
+        if (preg_match('/^\s*VERSION\s*=\s*([0-9][0-9A-Za-z.\-]*)\s*$/m', $roh, $m)) {
+            $f = $m[1];
+        }
+    }
+    return $f;
+}
+
 
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
@@ -280,6 +317,10 @@ function gv_vorgaben()
         'pt_frei'       => 0,      // rohe ptReal-Befehle ueber den Endpunkt?
         'szenen'        => array(), // selbst hinterlegte Szenen
         'mitschnitt_bis' => 0,     // Unixzeit; 0 = aus. Laeuft von selbst ab.
+        /* Die hoechste je vergebene Geraetenummer. Das Formular schreibt sie
+         * seit 0.9.9; ohne Eintrag hier wies das Zurueckspielen die EIGENE
+         * Sicherung als "unbekannte Einstellung" ab (U3). */
+        'nr_hoechste'   => 0,
     );
 }
 
@@ -317,9 +358,19 @@ function gv_json_schreiben($pfad, $daten, $rechte = null)
     if ($rechte !== null) {
         @chmod($tmp, $rechte);
     }
-    $ok = ftruncate($fh, 0) && fwrite($fh, $json) !== false;
-    fflush($fh);
-    fclose($fh);
+    /* Erfolg heisst: jedes Byte geschrieben, geleert, geschlossen und
+     * zurueckgelesen (C1, Durchgang 29.09.2026). Bis 0.9.22 galt
+     * "fwrite() !== false": bei voller Karte schrieb PHP 1024 von 1874 Byte,
+     * die Funktion meldete Erfolg, und die gekuerzte Datei ersetzte
+     * Konfiguration und Zweitschrift (in WSL gemessen, govee_agenten/code,
+     * Befund 1). */
+    $ok = ftruncate($fh, 0) && @fwrite($fh, $json) === strlen($json);
+    $ok = @fflush($fh) && $ok;
+    $ok = @fclose($fh) && $ok;
+    if ($ok) {
+        clearstatcache(true, $tmp);
+        $ok = ((string) @file_get_contents($tmp) === $json);
+    }
     if (!$ok) {
         @unlink($tmp);
         return false;
@@ -429,8 +480,14 @@ function gv_config_speichern($cfg)
     if (gv_config_lage() === 'kaputt') {
         return true;
     }
-    @copy($p['config'], $p['sicherung']);
-    @chmod($p['sicherung'], 0600);
+    /* Die Zweitschrift mit demselben Helfer - Rechte 0600 am Anlegen,
+     * Rueckgabewert geprueft, zurueckgelesen - und erst NACH der gelungenen
+     * Konfiguration (C1). Bis 0.9.22 kopierte copy() die Datei ungeprueft;
+     * eine gekuerzte Konfiguration ueberschrieb so auch die Zweitschrift. */
+    if (!gv_json_schreiben($p['sicherung'], $cfg, 0600)) {
+        gv_log_gebremst('zweitschrift', 'Die Zweitschrift ' . $p['sicherung']
+            . ' liess sich nicht schreiben; die Konfiguration selbst ist gespeichert.');
+    }
     return true;
 }
 
@@ -515,8 +572,15 @@ function gv_geraete()
 
 function gv_geraet($nr)
 {
+    /* Keine Rundung: 0 (oder weniger) ist kein Geraet und wird abgewiesen
+     * wie jede unbekannte Nummer (C5). Bis 0.9.22 machte max(1, ...) aus
+     * geraet=0 die Leuchte 1, und der Endpunkt schaltete sie still
+     * (govee_agenten/code, Befund 5). */
+    $nr = (int) $nr;
+    if ($nr < 1) {
+        return null;
+    }
     $g = gv_geraete();
-    $nr = max(1, (int) $nr);
     return isset($g[$nr]) ? $g[$nr] : null;
 }
 
@@ -555,15 +619,29 @@ function gv_stoerung_quittieren()
     return gv_json_schreiben($pfad, $z);
 }
 
-/* Zufallstoken fuer den unangemeldeten Endpunkt. */
-function gv_token_erzeugen($laenge = 24)
+/* Zufallstoken fuer den unangemeldeten Endpunkt. Zeichenvorrat und Laenge
+ * stehen an EINER Stelle; gv_token_gueltig() prueft gegen genau diese (U4). */
+define('GV_TOKEN_ZEICHEN', 'abcdefghijkmnpqrstuvwxyz23456789');
+define('GV_TOKEN_LAENGE', 24);
+
+function gv_token_erzeugen($laenge = GV_TOKEN_LAENGE)
 {
-    $zeichen = 'abcdefghijkmnpqrstuvwxyz23456789';
+    $zeichen = GV_TOKEN_ZEICHEN;
     $t = '';
     for ($i = 0; $i < $laenge; $i++) {
         $t .= $zeichen[random_int(0, strlen($zeichen) - 1)];
     }
     return $t;
+}
+
+/**
+ * Hat ein Token die Form, die gv_token_erzeugen() erzeugt? (U4)
+ * \z statt $: ein angehaengter Zeilenumbruch ist kein Token.
+ */
+function gv_token_gueltig($t)
+{
+    return is_string($t)
+        && preg_match('/^[' . GV_TOKEN_ZEICHEN . ']{' . GV_TOKEN_LAENGE . '}\z/', $t) === 1;
 }
 
 function gv_token()
@@ -660,6 +738,19 @@ function gv_altersgrenze($cfg = null, $art = 'lan')
 }
 
 /**
+ * Ist der Wert eines Geraets aktuell? EINE Rechnung fuer Endpunkt,
+ * Oberflaeche und MQTT (M2). Bis 0.9.22 kippte MQTT 'erreichbar' schon nach
+ * einem verpassten Durchlauf auf 0, waehrend der Endpunkt nach dem Alter
+ * urteilte und 1 meldete (govee_agenten/mqtt, Befund 2).
+ */
+function gv_geraet_frisch($e, $cfg, $jetzt)
+{
+    $ts = isset($e['ts']) ? (int) $e['ts'] : 0;
+    $grenze = gv_altersgrenze($cfg, isset($e['art']) ? (string) $e['art'] : 'lan');
+    return ($ts > 0 && ($jetzt - $ts) <= $grenze) ? 1 : 0;
+}
+
+/**
  * Die Geraetewerte, wie Endpunkt, Oberflaeche und Selbstpruefung sie sehen.
  * EINE Quelle fuer alle drei.
  *
@@ -688,10 +779,9 @@ function gv_werte()
             unset($g[$nr]);
             continue;
         }
-        $grenze = gv_altersgrenze($cfg, isset($e['art']) ? (string) $e['art'] : 'lan');
         $ts = isset($e['ts']) ? (int) $e['ts'] : 0;
         $g[$nr]['alter'] = $ts > 0 ? max(0, $jetzt - $ts) : -1;
-        $g[$nr]['ok']    = ($ts > 0 && ($jetzt - $ts) <= $grenze) ? 1 : 0;
+        $g[$nr]['ok']    = gv_geraet_frisch($e, $cfg, $jetzt);
         $g[$nr]['fehl']  = isset($e['fehl']) ? max(0, (int) $e['fehl']) : 0;
     }
     return $g;
@@ -884,6 +974,38 @@ function gv_dienst_pid()
     return $pid;
 }
 
+/**
+ * Laeuft der Dienst? Gefragt wird seine SPERRE (dienst.sperre im
+ * Datenordner, die bin/govee_dienst.php mit flock haelt, solange er lebt),
+ * nicht PID-Datei oder Port (C3). Die PID-Datei fehlte nach einem
+ * Doppelstart, obwohl der Dienst lief (govee_agenten/code, Befund 2), und der
+ * Port sagt nichts: UDP 4002 laesst sich neben dem Dienst ein zweites Mal
+ * binden (Befund 3).
+ *
+ * Nicht blockierend versucht und sofort wieder freigegeben. Die Datei wird
+ * nie angelegt - der unangemeldete Endpunkt legt nichts an. Rueckgabe 1
+ * laeuft, 0 laeuft nicht oder nicht feststellbar; dann wird nichts
+ * eingereiht.
+ */
+function gv_dienst_laeuft()
+{
+    $f = gv_paths()['datadir'] . '/dienst.sperre';
+    if (!is_file($f)) {
+        return 0;
+    }
+    $h = @fopen($f, 'r');
+    if ($h === false) {
+        return 0;
+    }
+    $blockiert = 0;
+    $frei = @flock($h, LOCK_EX | LOCK_NB, $blockiert);
+    if ($frei) {
+        flock($h, LOCK_UN);
+    }
+    fclose($h);
+    return (!$frei && $blockiert) ? 1 : 0;
+}
+
 function gv_dienst_soll()
 {
     return is_file(gv_paths()['datadir'] . '/soll_laufen') ? 1 : 0;
@@ -979,7 +1101,7 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
      * Dienst startete und die Leuchte ungefragt schaltete (in WSL gemessen,
      * Pruefung-Govee-0.9.21, Faelle K1/K2). Vorbild BatterieBMS 0.9.25 und
      * ZendureSolarFlow 0.9.26 (Entscheidung des Hausherrn 18.09.2026). */
-    if (gv_dienst_pid() === 0) {
+    if (!gv_dienst_laeuft()) {
         return array(0, gv_t('TEST.M_DIENST_LAEUFT_NICHT'));
     }
 
@@ -1446,10 +1568,11 @@ function gv_antwortport_oeffnen()
     $h = @stream_socket_server('udp://0.0.0.0:' . GV_PORT_ANTWORT, $fehlnr, $fehltext,
                                STREAM_SERVER_BIND);
     if ($h === false) {
-        if ((int) $fehlnr === 98) {
-            return array(null, 'Der Antwortport ' . GV_PORT_ANTWORT . ' ist bereits belegt. '
-                . 'Vermutlich laeuft der Abrufdienst - dann fuehrt er die Suche selbst aus.');
-        }
+        /* Einen Zweig "Nummer 98 = Port belegt, also laeuft der Dienst" gibt
+         * es nicht mehr (C3): PHP setzt auf UDP SO_REUSEADDR, ein zweites
+         * Binden neben dem Dienst gelingt, und scheitert es an einem fremden
+         * Sockel, kommt Nummer 0 (in WSL gemessen, govee_agenten/code,
+         * Befund 3). Ob der Dienst laeuft, sagt gv_dienst_laeuft(). */
         return array(null, 'Der Antwortport ' . GV_PORT_ANTWORT . ' liess sich nicht oeffnen: '
             . trim((string) $fehltext) . ' (Nummer ' . (int) $fehlnr . ')');
     }
@@ -1502,17 +1625,44 @@ function gv_suche($sekunden = 3)
 }
 
 /**
+ * Eine Adresse aus der Geraeteliste in eine IPv4-Adresse aufloesen (C6).
+ *
+ * Die Oberflaeche nimmt als Adresse auch einen Rechnernamen an. Die Leuchte
+ * antwortet aber immer von ihrer IP, und daran werden die Antworten
+ * zugeordnet - bis 0.9.22 galt eine unter ihrem Namen eingetragene Leuchte
+ * deshalb dauerhaft als "nicht erreichbar", obwohl sie antwortete
+ * (govee_agenten/code, Befund 6). Aufgeloest wird bei jedem Aufruf, also je
+ * Runde. Rueckgabe: die erste IPv4-Adresse oder '' (nicht aufloesbar).
+ */
+function gv_adresse_aufloesen($adresse)
+{
+    $adresse = trim((string) $adresse);
+    if ($adresse === '') {
+        return '';
+    }
+    if (preg_match(gv_regeln()['ip4'], $adresse)) {
+        return $adresse;
+    }
+    $ips = @gethostbynamel($adresse);
+    return (is_array($ips) && $ips) ? (string) $ips[0] : '';
+}
+
+/**
  * devStatus abfragen. Rueckgabe: array(Werte|null, Meldung).
  *
  * Ein Geraet, das nicht antwortet, liefert null - keine erfundene Null.
  */
 function gv_status_abfragen($ip, $sekunden = 2)
 {
+    $ziel = gv_adresse_aufloesen($ip);
+    if ($ziel === '') {
+        return array(null, 'Der Name ' . $ip . ' ist nicht aufloesbar - die Leuchte laesst sich so nicht fragen.');
+    }
     list($h, $meldung) = gv_antwortport_oeffnen();
     if ($h === null) {
         return array(null, $meldung);
     }
-    list($ok, $fehler) = gv_udp_senden($ip, GV_PORT_BEFEHL,
+    list($ok, $fehler) = gv_udp_senden($ziel, GV_PORT_BEFEHL,
         json_encode(array('msg' => array('cmd' => 'devStatus', 'data' => new stdClass()))));
     if (!$ok) {
         fclose($h);
@@ -1521,7 +1671,7 @@ function gv_status_abfragen($ip, $sekunden = 2)
     $antworten = gv_udp_horchen($h, $sekunden, 20);
     fclose($h);
     foreach ($antworten as $a) {
-        if ($a['von'] !== $ip) {
+        if ($a['von'] !== $ziel) {
             continue;   // die Antwort eines anderen Geraets gehoert nicht hierher
         }
         $m = isset($a['json']['msg']) && is_array($a['json']['msg']) ? $a['json']['msg'] : array();
@@ -2257,7 +2407,7 @@ function gv_cloud_anfrage($pfad, $daten = null)
         'Accept: application/json',
         'Accept-Language: de-DE,de;q=0.9,en;q=0.8',
         'Accept-Encoding: gzip, deflate',
-        'User-Agent: LoxBerry-Govee-Plugin/0.9.9',
+        'User-Agent: LoxBerry-Govee-Plugin/' . (gv_fassung() !== '' ? gv_fassung() : 'unbekannt'),
     );
     curl_setopt($ch, CURLOPT_HTTPHEADER, $kopf);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -2431,7 +2581,7 @@ function gv_abo_text()
  * mit einem eigenen MQTT-Client: so muss das Plugin ueberhaupt keine
  * Broker-Zugangsdaten kennen. Das Gateway hat sie ohnehin.
  */
-function gv_mqtt_senden(array $paare, $praefix)
+function gv_mqtt_senden(array $paare, $praefix, array $leeren = array())
 {
     $z = gv_mqtt_zustand();
     if (!$z['udpport']) {
@@ -2451,12 +2601,34 @@ function gv_mqtt_senden(array $paare, $praefix)
             . 'oeffnen: ' . trim((string) $fehltext));
         return false;
     }
+    /* Retain nach Hausstandard (M5, Entscheidung 3 vom 29.09.2026): Zustaende
+     * gehen ueber den UDP-Eingang mit dem Befehl "retain" hinaus, alles mit
+     * Zeitbezug und jede Dienstaussage mit "publish" (gv_mqtt_retain()).
+     * Eine leere Nutzlast loescht ein zurueckbehaltenes Thema; sie geht
+     * deshalb nur gewollt hinaus - fuer die Themen in $leeren (entfernte
+     * Geraete, M7) - und sonst nie, auch nicht fuer einen Wert, der erst durch
+     * das Saeubern leer wird. Nach je 20 Datagrammen 1 ms Pause (M6):
+     * Stoesse ohne Pause gehen am Gateway-Eingang verloren (Regeln/07). */
+    $n = 0;
+    foreach ($leeren as $k) {
+        @fwrite($s, 'retain ' . $praefix . '/' . $k . ' ');
+        if (++$n % 20 === 0) {
+            usleep(1000);
+        }
+    }
     foreach ($paare as $k => $v) {
         if ($v === null || $v === '') {
             continue;   // fehlender Wert: nichts senden statt eine erfundene 0
         }
-        $msg = 'publish ' . $praefix . '/' . $k . ' ' . gv_mqtt_wert_saeubern($v);
+        $wert = gv_mqtt_wert_saeubern($v);
+        if ($wert === '') {
+            continue;
+        }
+        $msg = (gv_mqtt_retain($k) ? 'retain ' : 'publish ') . $praefix . '/' . $k . ' ' . $wert;
         @fwrite($s, $msg);
+        if (++$n % 20 === 0) {
+            usleep(1000);
+        }
     }
     fclose($s);
     return true;
@@ -2483,6 +2655,138 @@ function gv_mqtt_themen()
         'geraetN/alter'     => 'GV_MQTT.ALTER',
         'geraetN/fehl'      => 'GV_MQTT.FEHL',
     );
+}
+
+/**
+ * Geht ein Thema zurueckbehalten hinaus? (M5, Entscheidung 3 vom 29.09.2026)
+ * Zustaende ja: name, an, hell, kelvin, r, g, b, hex, geraete. Nie: ok, ts,
+ * lebt, fehler_folge (Dienstaussagen), alter, erreichbar, fehl (Zeitbezug).
+ * EINE Stelle fuer Senden, Abraeumen und die Spalte im Reiter MQTT.
+ */
+function gv_mqtt_retain($thema)
+{
+    $basis = preg_replace('#^geraet(N|[0-9]+)/#', '', (string) $thema);
+    return in_array($basis, array('geraete', 'name', 'an', 'hell', 'kelvin', 'r', 'g', 'b', 'hex'), true);
+}
+
+/**
+ * Die MQTT-Paare einer Runde - EINE Stelle fuer den Dienst und die
+ * Pruefzeile "Themenliste gegen Sendecode" im Reiter Test (M4).
+ *
+ *   erreichbar  aus dem Alter, dieselbe Rechnung wie gv_werte() (M2)
+ *   Stoerung    bei erreichbar 0 gehen nur erreichbar, alter und fehl
+ *               hinaus, nicht die Altwerte (M3)
+ *
+ * $neu ist die Geraeteliste des Abbilds, $kopf traegt ok, geraete und
+ * fehler_folge.
+ */
+function gv_mqtt_paare($neu, $kopf, $cfg, $jetzt)
+{
+    $paare = array(
+        'ok'           => (int) $kopf['ok'],
+        'geraete'      => (int) $kopf['geraete'],
+        'ts'           => (int) $jetzt,
+        'lebt'         => 1,
+        'fehler_folge' => (int) $kopf['fehler_folge'],
+    );
+    foreach ($neu as $nr => $e) {
+        $pfx = 'geraet' . (int) $nr . '/';
+        $ts_g = isset($e['ts']) ? (int) $e['ts'] : 0;
+        $frisch = gv_geraet_frisch($e, $cfg, $jetzt);
+        if ($frisch) {
+            $paare[$pfx . 'name'] = isset($e['name']) ? $e['name'] : null;
+        }
+        $paare[$pfx . 'erreichbar'] = $frisch;
+        $paare[$pfx . 'alter'] = $ts_g > 0 ? max(0, $jetzt - $ts_g) : -1;
+        $paare[$pfx . 'fehl'] = isset($e['fehl']) ? (int) $e['fehl'] : 0;
+        if (!$frisch) {
+            continue;
+        }
+        foreach (array('an', 'hell', 'kelvin', 'r', 'g', 'b', 'hex') as $f) {
+            if (isset($e[$f])) {
+                $paare[$pfx . $f] = $e[$f];
+            }
+        }
+    }
+    return $paare;
+}
+
+/**
+ * Aus der Deinstallation: die zurueckbehaltenen Themen DIESER Linie unter
+ * dem eingestellten Praefix abraeumen (M5, Entscheidung 3). Betroffen ist
+ * jede Nummer bis nr_hoechste, jede Nummer in der Konfiguration und im
+ * letzten Abbild. Gesendet wird zweimal mit 1 s Abstand, weil der
+ * UDP-Eingang des Gateways Datagramme verliert (Regeln/07); ob der Broker
+ * sie vergessen hat, laesst sich von hier nicht nachlesen - das sagt die
+ * Ausgabe. Liest nur (gv_config(false)), legt nichts an, schreibt kein
+ * Protokoll. Rueckgabe: Zeilen fuer den Installer.
+ */
+function gv_mqtt_abraeumen()
+{
+    $cfg = gv_config(false);
+    $praefix = trim((string) $cfg['mqtt_topic'], '/');
+    if ($praefix === '' || !preg_match(gv_regeln()['topic'], $praefix)) {
+        return array('<WARNING> MQTT: das Themenpraefix ist leer oder ungueltig - '
+            . 'zurueckbehaltene Themen wurden nicht abgeraeumt.');
+    }
+    $z = gv_mqtt_zustand();
+    if (!$z['udpport']) {
+        return array('<INFO> MQTT: in general.json steht kein UDP-Eingangsport des Gateways - '
+            . 'zurueckbehaltene Themen unter ' . $praefix . '/ wurden nicht abgeraeumt.');
+    }
+    $nummern = array();
+    for ($i = 1; $i <= min(999, (int) $cfg['nr_hoechste']); $i++) {
+        $nummern[$i] = true;
+    }
+    foreach ((array) $cfg['geraete'] as $g) {
+        if (is_array($g) && isset($g['nr']) && (int) $g['nr'] > 0 && (int) $g['nr'] <= 999) {
+            $nummern[(int) $g['nr']] = true;
+        }
+    }
+    $l = gv_loxone();
+    foreach ((isset($l['geraete']) && is_array($l['geraete'])) ? array_keys($l['geraete']) : array() as $nr) {
+        if ((int) $nr > 0 && (int) $nr <= 999) {
+            $nummern[(int) $nr] = true;
+        }
+    }
+    ksort($nummern);
+    $themen = array();
+    foreach (array_keys(gv_mqtt_themen()) as $t) {
+        if (strpos($t, 'geraetN/') === 0) {
+            foreach (array_keys($nummern) as $nr) {
+                $tt = 'geraet' . $nr . '/' . substr($t, 8);
+                if (gv_mqtt_retain($tt)) {
+                    $themen[] = $tt;
+                }
+            }
+        } elseif (gv_mqtt_retain($t)) {
+            $themen[] = $t;
+        }
+    }
+    $fehlnr = 0;
+    $fehltext = '';
+    $s = @stream_socket_client('udp://127.0.0.1:' . (int) $z['udpport'], $fehlnr, $fehltext, 2);
+    if ($s === false) {
+        return array('<WARNING> MQTT: der UDP-Eingang des Gateways war nicht erreichbar - '
+            . 'zurueckbehaltene Themen unter ' . $praefix . '/ wurden nicht abgeraeumt.');
+    }
+    $n = 0;
+    for ($runde = 1; $runde <= 2; $runde++) {
+        if ($runde > 1) {
+            usleep(1000000);
+        }
+        foreach ($themen as $t) {
+            @fwrite($s, 'retain ' . $praefix . '/' . $t . ' ');
+            if (++$n % 20 === 0) {
+                usleep(1000);
+            }
+        }
+    }
+    fclose($s);
+    return array('<INFO> MQTT: ' . count($themen) . ' zurueckbehaltene Themen unter ' . $praefix
+        . '/ mit leerer Nutzlast an den UDP-Eingang ' . (int) $z['udpport'] . ' des Gateways gesendet ('
+        . $n . ' Datagramme in zwei Runden). Ob der Broker sie vergessen hat, wurde nicht nachgelesen: '
+        . "mosquitto_sub -t '" . $praefix . "/#' --retained-only");
 }
 
 /**
@@ -2669,8 +2973,12 @@ function gv_status_felder($g = null)
         /* -1 heisst "noch nie gemessen" - deshalb steht die Untergrenze auf
          * -1 und nicht auf 0. Neue Messgroessen werden hinten angehaengt,
          * damit bestehende Importe ihre Reihenfolge behalten. */
-        'ALTER'  => array('s', -1, 86400, 'GV_FELD.ALTER', 'GV_KACHEL.ALTER'),
-        'FEHL'   => array('', -1, 9999,  'GV_FELD.FEHL',  'GV_KACHEL.FEHL'),
+        /* MaxVal so, dass jeder erzeugbare Wert passt (U8): ueber MaxVal
+         * macht Loxone aus dem Wert eine 0 (Regeln/07). Bis 0.9.22 standen
+         * hier 86400 und 9999 - nach einem Tag Ausfall zeigte Loxone
+         * ALTER=0 und FEHL=0, also "frisch". */
+        'ALTER'  => array('s', -1, 2147483647, 'GV_FELD.ALTER', 'GV_KACHEL.ALTER'),
+        'FEHL'   => array('', -1, 2147483647, 'GV_FELD.FEHL',  'GV_KACHEL.FEHL'),
     );
 }
 
@@ -2894,13 +3202,18 @@ function gv_vorlage_lox($nummer = 1)
         'on'      => sprintf($pfad, 'farbe') . '&wert=<v.0>',
         'analog'  => true,
     );
-    $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_SZENENR') . $lb_zusatz,
-        'comment' => gv_klartext('GV_XML.LOX_SZENENR_K'),
-        'on'      => sprintf($pfad, 'szene') . '&nr=<v.0>',
-        'analog'  => true,
-    );
-    if ($g['pixel'] > 0) {
+    /* Ueber die Cloud gibt es keine Szenen - gv_befehl_cloud() lehnt sie ab.
+     * Ein Baustein, der nie wirkt, gehoert nicht in die Vorlage (U9). */
+    if ($g['art'] !== 'cloud') {
+        $cmds[] = array(
+            'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_SZENENR') . $lb_zusatz,
+            'comment' => gv_klartext('GV_XML.LOX_SZENENR_K'),
+            'on'      => sprintf($pfad, 'szene') . '&nr=<v.0>',
+            'analog'  => true,
+        );
+    }
+    /* Segmente (Balken) gibt es ebenfalls nur ueber LAN (Pruefung 29.09.2026). */
+    if ($g['pixel'] > 0 && $g['art'] !== 'cloud') {
         $cmds[] = array(
             'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_BALKEN') . $lb_zusatz,
             'comment' => sprintf(gv_klartext('GV_XML.LOX_BALKEN_K'), $g['pixel']),
@@ -3119,7 +3432,7 @@ function gv_sicherung_lesen($roh)
 {
     $mangel = array();
     $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
+    if (!is_array($daten) || ($daten && gv_ist_liste($daten))) {
         return array(null, array(gv_t('EINST.SICH_KEIN_JSON')), 0);
     }
     $neu = gv_vorgaben();
@@ -3129,39 +3442,47 @@ function gv_sicherung_lesen($roh)
      * lehnte die ganze Datei ab. */
     $bekannt = array_merge(array_keys($neu), array_keys(gv_geheim()));
     $anzahl = 0;
+    $gesehen = 0;
     foreach ($daten as $k => $w) {
+        $k = (string) $k;
+        /* Der lesbare Kopf (_plugin, _stand, _hinweis) wird ueberlesen, nicht
+         * als fremd beanstandet (U12). */
+        if (substr($k, 0, 1) === '_') {
+            continue;
+        }
+        /* Unmaskiert: die Anzeige maskiert selbst. Bis 0.9.22 stand hier
+         * gv_e(), und ein & erschien doppelt maskiert (U6). */
         if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(gv_t('EINST.SICH_FREMD'), gv_e((string) $k));
+            $mangel[] = sprintf(gv_t('EINST.SICH_FREMD'), $k);
             continue;
         }
-        if (!array_key_exists($k, $neu)) {
-            // gehoert in die Geheimnisdatei, nicht in die Konfiguration
-            $anzahl++;
+        $gesehen++;
+        /* Jeder Wert nach denselben Regeln wie das Formular (U4, Bauart E).
+         * Bis 0.9.22 wurde jeder Wert ungeprueft uebernommen: ein Token als
+         * Liste wurde zum Wort "Array", ein leeres Token wurde still neu
+         * gewuerfelt, geraete="kaputt" nahm alle Geraete weg
+         * (govee_agenten/oberflaeche, Befund 4). */
+        $wm = gv_sicherung_wert_pruefen($k, $w);
+        if ($wm) {
+            $mangel = array_merge($mangel, $wm);
             continue;
         }
-        $neu[$k] = $w;
+        if (array_key_exists($k, $neu)) {
+            $neu[$k] = $w;
+        }
         $anzahl++;
     }
-    if ($anzahl === 0) {
+    if ($gesehen === 0) {
         $mangel[] = gv_t('EINST.SICH_LEER');
     }
     /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
      *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+     * Eine Datei mit einem einzigen Schluessel lief bis 0.9.x ohne
+     * Beanstandung durch, und alle uebrigen Einstellungen fielen auf Werk
+     * zurueck (gemessen an VolkswagenID 0.9.11 am 03.09.2026, am 07.09.2026
+     * ueber den Bestand ausgerollt). Verglichen wird gegen die VORGABEN:
+     * was ausserhalb der Konfigurationsdatei liegt - der Cloud-Schluessel -
+     * darf fehlen. */
     $fehlend = array();
     foreach (array_keys(gv_vorgaben()) as $fk) {
         if (!array_key_exists($fk, $daten)) {
@@ -3169,8 +3490,373 @@ function gv_sicherung_lesen($roh)
         }
     }
     if ($fehlend) {
-        $mangel[] = sprintf(gv_t('EINST.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+        $mangel[] = sprintf(gv_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
+}
+
+/**
+ * Die Regeln des Formulars an EINER Stelle (U4). Das Formular im Reiter
+ * Einstellungen und das Zurueckspielen einer Sicherung pruefen mit genau
+ * diesen Mustern und Grenzen; bis 0.9.22 standen sie nur im Formular.
+ */
+function gv_regeln()
+{
+    return array(
+        'ip4'       => '/^\d{1,3}(\.\d{1,3}){3}$/',
+        'host'      => '/^[A-Za-z0-9][A-Za-z0-9\.\-]{1,80}$/',
+        'sku'       => '/^[A-Za-z0-9]{1,16}$/',
+        'device'    => '/^[0-9A-Fa-f:]{1,40}$/',
+        'topic'     => '#^[A-Za-z0-9_/\-]{1,64}$#',
+        'cloud_key' => '/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/',
+        'zahlen'    => array(
+            'intervall'  => array(5, 3600),
+            'suchtakt'   => array(0, 1440),
+            'wartezeit'  => array(0, 10),
+            'cloud_takt' => array(1, 1440),
+        ),
+        'zeile'     => array('pixel' => array(0, 200), 'kmin' => array(1000, 10000),
+                             'kmax' => array(1000, 10000)),
+        'schalter'  => array('mqtt_ein', 'steuerung_ein', 'cloud_ein', 'pt_frei'),
+    );
+}
+
+/** Eine Liste (0, 1, 2 ...) und keine Zuordnung mit Schluesseln? */
+function gv_ist_liste($w)
+{
+    return is_array($w) && ($w === array() || array_keys($w) === range(0, count($w) - 1));
+}
+
+/**
+ * Text, wie ihn das Formular speichert: das Formular entfernt Steuerzeichen,
+ * Anfuehrungszeichen und Leerraum am Rand. In einer eigenen Sicherung steht
+ * so etwas deshalb nie; kommt es doch, wird abgewiesen statt entfernt.
+ */
+function gv_sich_text($w)
+{
+    return is_string($w) && !preg_match('/[\x00-\x1F\x7F"\']/', $w) && trim($w) === $w;
+}
+
+/**
+ * Einen Wert aus einer Sicherung pruefen. Rueckgabe: Liste der
+ * Beanstandungen, leer = in Ordnung. Ein Schluessel ohne Regel wird
+ * abgewiesen - der Schutz faellt geschlossen aus.
+ */
+function gv_sicherung_wert_pruefen($k, $w)
+{
+    $r = gv_regeln();
+    if (isset($r['zahlen'][$k])) {
+        list($u, $o) = $r['zahlen'][$k];
+        if (!is_int($w)) {
+            return array(sprintf(gv_t('EINST.SICH_W_ZAHL'), $k));
+        }
+        return ($w < $u || $w > $o) ? array(sprintf(gv_t('EINST.FEHLER_BEREICH'), $k, $u, $o)) : array();
+    }
+    if (in_array($k, $r['schalter'], true)) {
+        return ($w === 0 || $w === 1) ? array() : array(sprintf(gv_t('EINST.SICH_W_SCHALTER'), $k));
+    }
+    switch ($k) {
+        case 'aktionstoken':
+            return gv_token_gueltig($w) ? array() : array(gv_t('EINST.SICH_W_TOKEN'));
+        case 'cloud_key':
+            return (is_string($w) && ($w === '' || preg_match($r['cloud_key'], $w)))
+                ? array() : array(gv_t('EINST.SICH_W_KEY'));
+        case 'mqtt_topic':
+            return (gv_sich_text($w) && preg_match($r['topic'], $w) && trim($w, '/') === $w)
+                ? array() : array('mqtt_topic: ' . gv_t('EINST.FEHLER_TOPIC'));
+        case 'nr_hoechste':
+            if (!is_int($w)) {
+                return array(sprintf(gv_t('EINST.SICH_W_ZAHL'), $k));
+            }
+            return ($w < 0 || $w > 999) ? array(sprintf(gv_t('EINST.FEHLER_BEREICH'), $k, 0, 999)) : array();
+        case 'mitschnitt_bis':
+            return (is_int($w) && $w >= 0) ? array() : array(sprintf(gv_t('EINST.SICH_W_ZAHL'), $k));
+        case 'geraete':
+            return gv_sicherung_geraete_pruefen($w);
+        case 'szenen':
+            return gv_sicherung_szenen_pruefen($w);
+    }
+    return array(sprintf(gv_t('EINST.SICH_FREMD'), $k));
+}
+
+/**
+ * Die Geraeteliste einer Sicherung: eine Liste (keine Zuordnung) von
+ * hoechstens acht Zeilen, jede mit denselben Pruefungen wie im Formular.
+ * Nichts wird zurechtgebogen (gv_geraete() taete es still).
+ */
+function gv_sicherung_geraete_pruefen($w)
+{
+    $r = gv_regeln();
+    if (!gv_ist_liste($w) || count($w) > 8) {
+        return array(sprintf(gv_t('EINST.SICH_W_LISTE'), 'geraete', 8));
+    }
+    $m = array();
+    $namen = array();
+    $nummern = array();
+    $felder = array('name', 'art', 'ip', 'sku', 'device', 'pt', 'nr', 'pixel', 'kmin', 'kmax');
+    foreach ($w as $i => $z) {
+        $zeile = $i + 1;
+        if (!is_array($z) || ($z && gv_ist_liste($z))) {
+            $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile, gv_t('EINST.SICH_W_OBJEKT'));
+            continue;
+        }
+        foreach (array_keys($z) as $f) {
+            if (!in_array((string) $f, $felder, true)) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile,
+                    sprintf(gv_t('EINST.SICH_W_FELD_FREMD'), $f));
+            }
+        }
+        foreach (array('name', 'art') as $f) {
+            if (!array_key_exists($f, $z)) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile,
+                    sprintf(gv_t('EINST.SICH_W_FELD_FEHLT'), $f));
+            }
+        }
+        foreach (array('name', 'ip', 'sku', 'device') as $f) {
+            if (array_key_exists($f, $z) && !gv_sich_text($z[$f])) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile,
+                    sprintf(gv_t('EINST.SICH_W_TEXT'), $f));
+            }
+        }
+        $art = isset($z['art']) ? $z['art'] : null;
+        $ip = (isset($z['ip']) && is_string($z['ip'])) ? $z['ip'] : '';
+        $sku = (isset($z['sku']) && is_string($z['sku'])) ? $z['sku'] : '';
+        $dev = (isset($z['device']) && is_string($z['device'])) ? $z['device'] : '';
+        if ($art !== 'lan' && $art !== 'cloud') {
+            $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile, gv_t('EINST.SICH_W_ART'));
+        } elseif ($art === 'lan') {
+            if ($ip === '') {
+                $m[] = sprintf(gv_t('EINST.FEHLER_IP_FEHLT'), $zeile);
+            } elseif (!preg_match($r['ip4'], $ip) && !preg_match($r['host'], $ip)) {
+                $m[] = sprintf(gv_t('EINST.FEHLER_IP'), $zeile);
+            }
+        } else {
+            if ($sku === '' || $dev === '') {
+                $m[] = sprintf(gv_t('EINST.FEHLER_CLOUD_IDS'), $zeile);
+            } elseif (!preg_match($r['sku'], $sku) || !preg_match($r['device'], $dev)) {
+                $m[] = sprintf(gv_t('EINST.FEHLER_CLOUD_MUSTER'), $zeile);
+            }
+        }
+        if (array_key_exists('pt', $z) && $z['pt'] !== 0 && $z['pt'] !== 1) {
+            $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile, gv_t('EINST.SICH_W_PT'));
+        }
+        if (array_key_exists('nr', $z)) {
+            if (!is_int($z['nr']) || $z['nr'] < 1 || $z['nr'] > 999 || isset($nummern[$z['nr']])) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile, gv_t('EINST.SICH_W_NR'));
+            } else {
+                $nummern[$z['nr']] = true;
+            }
+        }
+        $zahl_gut = true;
+        foreach ($r['zeile'] as $f => $gr) {
+            if (!array_key_exists($f, $z)) {
+                continue;
+            }
+            if (!is_int($z[$f]) || $z[$f] < $gr[0] || $z[$f] > $gr[1]) {
+                $zahl_gut = false;
+                $m[] = sprintf(gv_t('EINST.FEHLER_ZEILENWERT'), $zeile,
+                    gv_t('EINST.T_' . strtoupper($f)), $gr[0], $gr[1]);
+            }
+        }
+        if ($zahl_gut && isset($z['kmin'], $z['kmax']) && $z['kmin'] >= $z['kmax']) {
+            $m[] = sprintf(gv_t('EINST.FEHLER_KELVIN_REIHE'), $zeile);
+        }
+        if (isset($z['name']) && is_string($z['name']) && $z['name'] !== '') {
+            $klein = strtolower($z['name']);
+            if (isset($namen[$klein])) {
+                $m[] = sprintf(gv_t('EINST.FEHLER_NAME_DOPPELT'), $zeile, $z['name']);
+            }
+            $namen[$klein] = true;
+        }
+    }
+    return $m;
+}
+
+/**
+ * Die eigenen Szenen einer Sicherung: Liste von hoechstens acht Zeilen,
+ * Schluessel wie ihn das Formular bildet, Befehle mit gv_pt_pruefen(),
+ * kein Titel, den eine eingebaute Szene derselben SKU traegt (U10).
+ */
+function gv_sicherung_szenen_pruefen($w)
+{
+    if (!gv_ist_liste($w) || count($w) > 8) {
+        return array(sprintf(gv_t('EINST.SICH_W_LISTE'), 'szenen', 8));
+    }
+    $m = array();
+    $belegt = array();
+    $felder = array('schluessel', 'name', 'sku', 'cmd');
+    foreach ($w as $i => $s) {
+        $zeile = $i + 1;
+        if (!is_array($s) || ($s && gv_ist_liste($s))) {
+            $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'szenen', $zeile, gv_t('EINST.SICH_W_OBJEKT'));
+            continue;
+        }
+        foreach (array_keys($s) as $f) {
+            if (!in_array((string) $f, $felder, true)) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'szenen', $zeile,
+                    sprintf(gv_t('EINST.SICH_W_FELD_FREMD'), $f));
+            }
+        }
+        foreach (array('schluessel', 'name', 'cmd') as $f) {
+            if (!array_key_exists($f, $s)) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'szenen', $zeile,
+                    sprintf(gv_t('EINST.SICH_W_FELD_FEHLT'), $f));
+            }
+        }
+        foreach (array('name', 'sku') as $f) {
+            if (array_key_exists($f, $s) && !gv_sich_text($s[$f])) {
+                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'szenen', $zeile,
+                    sprintf(gv_t('EINST.SICH_W_TEXT'), $f));
+            }
+        }
+        if (isset($s['name']) && $s['name'] === '') {
+            $m[] = sprintf(gv_t('EINST.FEHLER_SZENE_UNVOLLSTAENDIG'), $zeile);
+        }
+        if (array_key_exists('schluessel', $s)) {
+            if (!is_string($s['schluessel']) || !preg_match('/^[a-z0-9_]{1,33}$/', $s['schluessel'])) {
+                $m[] = sprintf(gv_t('EINST.FEHLER_SZENE_NAME'), $zeile);
+            } elseif (isset($belegt[$s['schluessel']])) {
+                $m[] = sprintf(gv_t('EINST.FEHLER_SZENE_DOPPELT'), $zeile, $s['schluessel']);
+            } else {
+                $belegt[$s['schluessel']] = true;
+            }
+        }
+        if (array_key_exists('cmd', $s)) {
+            $cmd = $s['cmd'];
+            $nur_text = gv_ist_liste($cmd);
+            foreach ($nur_text ? $cmd : array() as $c) {
+                if (!is_string($c)) {
+                    $nur_text = false;
+                }
+            }
+            if (!$nur_text || !$cmd) {
+                $m[] = sprintf(gv_t('EINST.FEHLER_SZENE_CMD'), $zeile, gv_t('EINST.SICH_W_CMD'));
+            } else {
+                list($geprueft, $meldung) = gv_pt_pruefen($cmd);
+                if ($geprueft === null) {
+                    $m[] = sprintf(gv_t('EINST.FEHLER_SZENE_CMD'), $zeile, $meldung);
+                }
+            }
+        }
+        if (isset($s['name']) && is_string($s['name'])
+            && gv_szene_titel_belegt($s['name'], (isset($s['sku']) && is_string($s['sku'])) ? $s['sku'] : '')) {
+            $m[] = sprintf(gv_t('EINST.FEHLER_SZENE_TITEL'), $zeile, $s['name'],
+                (isset($s['sku']) && is_string($s['sku'])) ? $s['sku'] : '');
+        }
+    }
+    return $m;
+}
+
+/**
+ * Traegt eine eigene Szene denselben Titel wie eine eingebaute derselben
+ * SKU? (U10) Der Titel in der Importdatei lautet "<Geraet> - <Szenenname>
+ * (<SKU>)"; gleich ist er, wenn Name und SKU gleich sind. Verglichen wird
+ * ohne Gross-/Kleinschreibung (nur ASCII, wie beim Namensvergleich der
+ * Geraete) mit dem Klartext der eingestellten Sprache - die andere Sprache
+ * wird nicht verglichen.
+ */
+function gv_szene_titel_belegt($name, $sku)
+{
+    $n = strtolower(trim((string) $name));
+    $s = strtolower(trim((string) $sku));
+    foreach (gv_szenen() as $sz) {
+        if (strtolower($sz['sku']) === $s && strtolower(gv_klartext($sz['name'])) === $n) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Die Sicherungsdatei (U12): vorn ein lesbarer Kopf aus _-Schluesseln, den
+ * gv_sicherung_lesen() ueberliest; dahinter die Konfiguration und der
+ * Cloud-Schluessel. Rueckgabe: JSON oder false.
+ */
+function gv_sicherung_datei()
+{
+    $p = gv_paths();
+    $kopf = array(
+        '_plugin'  => 'Govee (' . $p['plugin'] . ')',
+        '_stand'   => (gv_fassung() !== '' ? gv_fassung() : 'unbekannt') . ', ' . date('Y-m-d H:i:s'),
+        '_hinweis' => gv_klartext('EINST.SICH_KOPF_HINWEIS'),
+    );
+    return json_encode($kopf + array_merge(gv_config(), gv_geheim()),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * Einmalmeldung nach dem POST (U5, Regeln/04): eine Datei im Datenordner,
+ * 0600, beim folgenden GET gelesen UND geloescht; aelter als 120 s wird
+ * verworfen. Aktionstoken und Cloud-Schluessel werden vor dem Schreiben
+ * unkenntlich gemacht. Bauform ak_einmal_*() aus AnkerSolix 0.9.21.
+ */
+function gv_einmal_schreiben($meldungen, $fehler, $test)
+{
+    $p = gv_paths();
+    $geheim = array();
+    $cfg = gv_config(false);
+    $g = gv_geheim();
+    foreach (array(isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '',
+                   isset($g['cloud_key']) ? $g['cloud_key'] : '') as $w) {
+        if (is_string($w) && strlen($w) >= 4) {
+            $geheim[] = $w;
+            $geheim[] = gv_e($w);
+        }
+    }
+    $weg = function ($t) use ($geheim) {
+        return $geheim ? str_replace($geheim, '***', (string) $t) : (string) $t;
+    };
+    return gv_json_schreiben($p['datadir'] . '/einmalmeldung.json', array(
+        'zeit'      => time(),
+        'meldungen' => array_map($weg, array_values((array) $meldungen)),
+        'fehler'    => array_map($weg, array_values((array) $fehler)),
+        'test'      => $weg($test),
+    ), 0600);
+}
+
+function gv_einmal_lesen()
+{
+    $f = gv_paths()['datadir'] . '/einmalmeldung.json';
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return null;
+    }
+    $liste = function ($x) {
+        return is_array($x) ? array_values(array_map('strval', array_filter($x, 'is_scalar'))) : array();
+    };
+    return array(
+        'meldungen' => $liste(isset($d['meldungen']) ? $d['meldungen'] : null),
+        'fehler'    => $liste(isset($d['fehler']) ? $d['fehler'] : null),
+        'test'      => isset($d['test']) && is_scalar($d['test']) ? (string) $d['test'] : '',
+    );
+}
+
+/**
+ * Eine Adresse ohne curl abrufen und den Statuscode lesen (C10). Statt der
+ * vordefinierten Variablen der HTTP-Kopfzeilen, die PHP 8.5 als veraltet fuehrt, kommen
+ * die Kopfzeilen aus stream_get_meta_data(). Bauform eb_http_abruf() aus
+ * Einspeisebremse 0.9.28. Rueckgabe: array(Rumpf|false, Statuscode).
+ */
+function gv_http_abruf($url, $ctx)
+{
+    $fp = @fopen($url, 'r', false, $ctx);
+    if ($fp === false) {
+        return array(false, 0);
+    }
+    $meta = @stream_get_meta_data($fp);
+    $t = @stream_get_contents($fp);
+    @fclose($fp);
+    $code = 0;
+    $kopf = (is_array($meta) && isset($meta['wrapper_data']) && is_array($meta['wrapper_data']))
+        ? $meta['wrapper_data'] : array();
+    foreach ($kopf as $z) {
+        if (is_string($z) && preg_match('#^HTTP/\S+\s+([0-9]{3})#', $z, $m)) {
+            $code = (int) $m[1];
+        }
+    }
+    return array($t, $code);
 }

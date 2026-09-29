@@ -77,6 +77,8 @@ $gv_meldungen = array();
 $gv_fehler = array();      // gesammelt, nicht ueberschrieben
 $gv_testausgabe = '';
 $gv_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
+/* Jeder POST endet mit 303, auch einer mit ungueltigem Merkmal (U5). */
+$gv_post_roh = $gv_post;
 
 /* ---------------- Formularschutz ----------------
  * EINE Pruefung, und sie steht vor allen Handlern - einen Handler kann man
@@ -91,6 +93,18 @@ if ($gv_post) {
     if ($gv_fmt === '' || !hash_equals($gv_fmt, $gv_mit)) {
         $gv_post = false;
         $gv_fehler[] = gv_t('ALLG.FORMULAR_FREMD');
+    }
+}
+
+/* Die Einmalmeldung der vorigen Anfrage - NUR beim GET (U5). Beim POST ist
+ * $gv_fehler der Sammler der Eingabepruefung; eine alte Beanstandung
+ * verhinderte dort das Speichern. */
+if (!$gv_post_roh) {
+    $gv_einmal = gv_einmal_lesen();
+    if ($gv_einmal) {
+        $gv_meldungen = $gv_einmal['meldungen'];
+        $gv_fehler = array_merge($gv_fehler, $gv_einmal['fehler']);
+        $gv_testausgabe = $gv_einmal['test'];
     }
 }
 
@@ -137,8 +151,9 @@ if ($gv_post && isset($_POST['sicherung_holen'])) {
      *
      * Damit traegt sie ein Geheimnis, und der Hinweis daneben sagt das:
      * wie ein Passwort behandeln, nicht in ein Forum haengen. */
-    $gv_sich = array_merge(gv_config(), gv_geheim());
-    $gv_js = json_encode($gv_sich, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* Vorn ein lesbarer Kopf (_plugin, _stand, _hinweis), den das
+     * Zurueckspielen ueberliest (U12); gebaut in gv_sicherung_datei(). */
+    $gv_js = gv_sicherung_datei();
     if ($gv_js === false) {
         $gv_fehler[] = gv_t('EINST.FEHLER_SICHERUNG');
         $gv_tab = 'tab-settings';
@@ -182,7 +197,10 @@ if ($gv_post && isset($_POST['gv_zurueck'])) {
             if (isset($gv_roh_daten['cloud_key'])) {
                 $gv_g = gv_geheim();
                 $gv_g['cloud_key'] = (string) $gv_roh_daten['cloud_key'];
-                gv_geheim_speichern($gv_g);
+                /* Rueckgabewert pruefen und melden (U11). */
+                if (!gv_geheim_speichern($gv_g)) {
+                    $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
+                }
             }
             $gv_meldungen[] = sprintf(gv_t('EINST.SICH_UEBERNOMMEN'), $gv_n);
         } else {
@@ -236,8 +254,10 @@ if ($gv_post && isset($_POST['speichern'])) {
                 continue;
             }
             // IPv4 oder Hostname zulassen - beides ist gebraeuchlich.
-            if (!preg_match('/^\d{1,3}(\.\d{1,3}){3}$/', $gv_ip)
-                && !preg_match('/^[A-Za-z0-9][A-Za-z0-9\.\-]{1,80}$/', $gv_ip)) {
+            /* Die Muster stehen in gv_regeln() - dieselben prueft das
+             * Zurueckspielen einer Sicherung (U4). */
+            if (!preg_match(gv_regeln()['ip4'], $gv_ip)
+                && !preg_match(gv_regeln()['host'], $gv_ip)) {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_IP'), $gv_i + 1);
                 continue;
             }
@@ -246,8 +266,8 @@ if ($gv_post && isset($_POST['speichern'])) {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_CLOUD_IDS'), $gv_i + 1);
                 continue;
             }
-            if (!preg_match('/^[A-Za-z0-9]{1,16}$/', $gv_sku)
-                || !preg_match('/^[0-9A-Fa-f:]{1,40}$/', $gv_dev)) {
+            if (!preg_match(gv_regeln()['sku'], $gv_sku)
+                || !preg_match(gv_regeln()['device'], $gv_dev)) {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_CLOUD_MUSTER'), $gv_i + 1);
                 continue;
             }
@@ -290,8 +310,7 @@ if ($gv_post && isset($_POST['speichern'])) {
             'pt'     => $gv_hol('g_pt') === '1' ? 1 : 0,
             'nr'     => $gv_znr,
         );
-        foreach (array('pixel' => array(0, 200), 'kmin' => array(1000, 10000),
-                       'kmax' => array(1000, 10000)) as $gv_f => $gv_gr) {
+        foreach (gv_regeln()['zeile'] as $gv_f => $gv_gr) {
             $gv_w = $gv_hol('g_' . $gv_f);
             if ($gv_w === '') {
                 continue;   // leer = Vorgabe nehmen
@@ -365,6 +384,13 @@ if ($gv_post && isset($_POST['speichern'])) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_DOPPELT'), $gv_i + 1, $gv_sschl);
             continue;
         }
+        /* Denselben Titel wie eine eingebaute Szene derselben SKU gibt es
+         * nicht zweimal (U10): in der Importdatei stuenden zwei gleich
+         * benannte Bausteine (govee_agenten/oberflaeche, Befund 10). */
+        if (gv_szene_titel_belegt($gv_sname, $gv_ssku)) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_TITEL'), $gv_i + 1, $gv_sname, $gv_ssku);
+            continue;
+        }
         $gv_liste = array_values(array_filter(array_map('trim',
             preg_split('/[\s,]+/', $gv_scmd)), 'strlen'));
         list($gv_geprueft, $gv_meldung) = gv_pt_pruefen($gv_liste);
@@ -378,12 +404,7 @@ if ($gv_post && isset($_POST['speichern'])) {
     }
     $gv_cfg['szenen'] = $gv_szenen_neu;
 
-    foreach (array(
-        'intervall'  => array(5, 3600),
-        'suchtakt'   => array(0, 1440),
-        'wartezeit'  => array(0, 10),
-        'cloud_takt' => array(1, 1440),
-    ) as $gv_feld => $gv_grenzen) {
+    foreach (gv_regeln()['zahlen'] as $gv_feld => $gv_grenzen) {
         $gv_wert = isset($_POST[$gv_feld]) ? trim((string) $_POST[$gv_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $gv_wert)) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_ZAHL'), gv_t('EINST.L_' . strtoupper($gv_feld)));
@@ -411,14 +432,18 @@ if ($gv_post && isset($_POST['speichern'])) {
     $gv_key = isset($_POST['cloud_key']) ? trim((string) $_POST['cloud_key']) : '';
     if (isset($_POST['cloud_key_loeschen'])) {
         $gv_geheim['cloud_key'] = '';
-        gv_geheim_speichern($gv_geheim);
-        $gv_meldungen[] = gv_t('EINST.KEY_GELOESCHT');
+        /* Rueckgabewert pruefen (U11): "geloescht" nur, wenn geschrieben. */
+        if (gv_geheim_speichern($gv_geheim)) {
+            $gv_meldungen[] = gv_t('EINST.KEY_GELOESCHT');
+        } else {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
+        }
     } elseif ($gv_key !== '') {
         /* Die FORM eines Geheimnisses darf beurteilt werden, sein Wert nie
          * angezeigt. Der Govee-Schluessel ist eine GUID mit 36 Zeichen -
          * wer etwas anderes einfuegt, laeuft sonst in eine Fehlermeldung des
          * Anbieters statt in eine verstaendliche hier. */
-        if (!preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/', $gv_key)) {
+        if (!preg_match(gv_regeln()['cloud_key'], $gv_key)) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_KEY'), strlen($gv_key));
         } else {
             $gv_geheim['cloud_key'] = $gv_key;
@@ -456,14 +481,17 @@ if ($gv_post && isset($_POST['save_mqtt'])) {
     $gv_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
     $gv_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
         (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
-    if ($gv_mtopic === '' || !preg_match('#^[A-Za-z0-9_/\-]{1,64}$#', $gv_mtopic)) {
+    if ($gv_mtopic === '' || !preg_match(gv_regeln()['topic'], $gv_mtopic)) {
         $gv_fehler[] = gv_t('EINST.FEHLER_TOPIC');
     } else {
         $gv_mcfg['mqtt_topic'] = trim($gv_mtopic, '/');
     }
     if (!$gv_fehler) {
         if (gv_config_speichern($gv_mcfg)) {
-        $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
+            $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
+        } else {
+            /* Bis 0.9.22 ohne Zweig fuer den Fehlschlag (U11). */
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
         }
     }
     $gv_tab = 'tab-mqtt';
@@ -501,9 +529,14 @@ if ($gv_post && isset($_POST['uebernehmen'])) {
         $gv_vorhanden[$gv_f['ip']] = true;
         $gv_dazu++;
     }
-    if ($gv_dazu > 0 && gv_config_speichern($gv_cfg)) {
-        $gv_meldungen[] = sprintf(gv_t('EINST.UEBERNOMMEN'), $gv_dazu);
-    } elseif ($gv_dazu === 0) {
+    /* Ein Fehlschlag beim Speichern blieb bis 0.9.22 still (U11). */
+    if ($gv_dazu > 0) {
+        if (gv_config_speichern($gv_cfg)) {
+            $gv_meldungen[] = sprintf(gv_t('EINST.UEBERNOMMEN'), $gv_dazu);
+        } else {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
+        }
+    } else {
         $gv_meldungen[] = gv_t('EINST.NICHTS_NEU');
     }
     $gv_tab = 'tab-settings';
@@ -541,9 +574,14 @@ if ($gv_post && isset($_POST['uebernehmen_cloud'])) {
         $gv_belegt[$gv_c['device']] = true;
         $gv_dazu++;
     }
-    if ($gv_dazu > 0 && gv_config_speichern($gv_cfg)) {
-        $gv_meldungen[] = sprintf(gv_t('EINST.UEBERNOMMEN'), $gv_dazu);
-    } elseif ($gv_dazu === 0) {
+    /* Ein Fehlschlag beim Speichern blieb bis 0.9.22 still (U11). */
+    if ($gv_dazu > 0) {
+        if (gv_config_speichern($gv_cfg)) {
+            $gv_meldungen[] = sprintf(gv_t('EINST.UEBERNOMMEN'), $gv_dazu);
+        } else {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
+        }
+    } else {
         $gv_meldungen[] = gv_t('EINST.NICHTS_NEU');
     }
     $gv_tab = 'tab-settings';
@@ -589,8 +627,13 @@ if ($gv_post && isset($_POST['stoerung_quittieren'])) {
 /* ---------------- Log leeren ---------------- */
 if ($gv_post && isset($_POST['log_leeren'])) {
     @mkdir(dirname($gv_p['log']), 0775, true);
-    @file_put_contents($gv_p['log'], '[' . date('Y-m-d H:i:s') . '] ' . gv_t('LOG.GELEERT') . "\n");
-    $gv_meldungen[] = gv_t('LOG.GELEERT');
+    $gv_leerzeile = '[' . date('Y-m-d H:i:s') . '] ' . gv_t('LOG.GELEERT') . "\n";
+    /* "geleert" nur, wenn geschrieben (U11). */
+    if (@file_put_contents($gv_p['log'], $gv_leerzeile) === strlen($gv_leerzeile)) {
+        $gv_meldungen[] = gv_t('LOG.GELEERT');
+    } else {
+        $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['log']);
+    }
     $gv_tab = 'tab-log';
 }
 
@@ -619,6 +662,21 @@ if ($gv_post && isset($_POST['selbsttest'])) {
     $gv_tab = 'tab-test';
 }
 
+/* ---------------- Nach dem POST: umleiten (U5) ----------------
+ *
+ * Bis 0.9.22 leitete kein Handler um; ein Neuladen schickte "Dienst neu
+ * starten" ein zweites Mal, und nach "Token neu" meldete F5 eine fremde Seite
+ * (govee_agenten/oberflaeche, Befund 5). Jetzt endet jeder POST mit 303 auf
+ * index.php?form=<reiter>; Meldungen, Beanstandungen und Testausgaben reisen
+ * als Einmalmeldung. Die Downloads (Vorlage, Sicherung) sind oben schon mit
+ * exit hinaus. Scheitert das Schreiben der Einmalmeldung, wird wie bisher
+ * direkt gerendert - so geht keine Meldung verloren. Bauform AnkerSolix
+ * 0.9.21. */
+if ($gv_post_roh && gv_einmal_schreiben($gv_meldungen, $gv_fehler, $gv_testausgabe)) {
+    header('Location: index.php?form=' . rawurlencode(substr($gv_tab, 4)), true, 303);
+    exit;
+}
+
 /* ---------------- Laden ---------------- */
 $gv_cfg = gv_config();
 $gv_geheim = gv_geheim();
@@ -629,6 +687,8 @@ $gv_zustand = gv_zustand();
 $gv_such = gv_gefunden();
 $gv_alter = gv_alter();
 $gv_pid = gv_dienst_pid();
+/* Ob der Dienst laeuft, sagt seine Sperre, nicht die PID-Datei (C3). */
+$gv_laeuft = gv_dienst_laeuft();
 $gv_mqtt = gv_mqtt_zustand();
 $gv_host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
     ? preg_replace('/[^A-Za-z0-9\.\-:]/', '', (string) $_SERVER['HTTP_HOST'])
@@ -751,7 +811,7 @@ if ($gv_rahmen) {
 
 <div class="sm-kacheln">
   <div class="sm-kachel"><?= gv_e(gv_t('ALLG.DIENST')) ?>
-    <b class="<?= $gv_pid ? 'sm-an' : 'sm-aus' ?>"><?= $gv_pid ? gv_e(gv_t('ALLG.LAEUFT')) : gv_e(gv_t('ALLG.GESTOPPT')) ?></b>
+    <b class="<?= $gv_laeuft ? 'sm-an' : 'sm-aus' ?>"><?= $gv_laeuft ? gv_e(gv_t('ALLG.LAEUFT')) : gv_e(gv_t('ALLG.GESTOPPT')) ?></b>
     <span class="sm-hilfe"><?= $gv_pid ? 'PID ' . (int) $gv_pid : gv_e(gv_t('ALLG.KEINE_PID')) ?></span>
   </div>
   <div class="sm-kachel"><?= gv_e(gv_t('ALLG.GERAETE')) ?>
@@ -1067,7 +1127,7 @@ if ($gv_cliste) { ?>
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post" enctype="multipart/form-data">
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
-    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <input data-role="none" type="file" name="gv_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gv_zurueck" value="1"><?= gv_e(gv_t('EINST.K_ZURUECK')) ?></button>
   </form>
@@ -1137,10 +1197,12 @@ if ($gv_cliste) { ?>
 <h2><?= gv_e(gv_t('MQTT.H_THEMEN')) ?></h2>
 <p class="sm-hilfe"><?= gv_t('MQTT.THEMEN_ERKLAERUNG') ?></p>
 <table class="sm-tbl">
-<tr><th style="width:40%;"><?= gv_e(gv_t('MQTT.T_THEMA')) ?></th><th><?= gv_e(gv_t('MQTT.T_BEDEUTUNG')) ?></th></tr>
+<tr><th style="width:40%;"><?= gv_e(gv_t('MQTT.T_THEMA')) ?></th><th><?= gv_e(gv_t('MQTT.T_BEDEUTUNG')) ?></th>
+    <th style="width:12%;"><?= gv_e(gv_t('MQTT.T_RETAINED')) ?></th></tr>
 <?php foreach (gv_mqtt_themen() as $gv_thm => $gv_schl) { ?>
 <tr><td><span class="sm-mono"><?= gv_e($gv_thema . '/' . $gv_thm) ?></span></td>
-    <td><?= gv_t($gv_schl) ?></td></tr>
+    <td><?= gv_t($gv_schl) ?></td>
+    <td><?= gv_e(gv_mqtt_retain($gv_thm) ? gv_t('ALLG.JA') : gv_t('ALLG.NEIN')) ?></td></tr>
 <?php } ?>
 </table>
 <p class="sm-hilfe"><?= gv_t('MQTT.N_ERKLAERUNG') ?></p>

@@ -143,15 +143,39 @@ if [ -n "$WAISEN" ]; then
     echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $WAISEN)."
 fi
 
+# ---- Zurueckbehaltene MQTT-Themen abraeumen (M5, Entscheidung 3) ----
+#
+# Seit dem Durchgang 29.09.2026 gehen Zustaende retained hinaus. NACH dem
+# Anhalten des Dienstes - sonst schriebe er sie gleich wieder - und VOR dem
+# Loeschen des Datenordners (die Geraetenummern stehen im Abbild). Nur eigene
+# Themen unter dem eingestellten Praefix (gv_mqtt_abraeumen() in gv_lib.php).
+# Als loxberry, nicht als root; stdin geschlossen, Laufzeit begrenzt.
+# Bauform ZendureSolarFlow 0.9.28.
+if command -v php >/dev/null 2>&1 && [ -f "$GV_DIENST" ]; then
+    if [ "$(id -u)" = "0" ] && id loxberry >/dev/null 2>&1; then
+        su -s /bin/bash loxberry -c "$(printf '%q ' env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" \
+            timeout 60 php "$GV_DIENST" --mqtt-leeren)" < /dev/null 2>&1 || true
+    else
+        env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout 60 php "$GV_DIENST" --mqtt-leeren \
+            < /dev/null 2>&1 || true
+    fi
+else
+    echo "<INFO> PHP oder govee_dienst.php fehlt - zurueckbehaltene MQTT-Themen wurden nicht abgeraeumt."
+fi
+
 # ALLE Sicherungen neben dem Ordner - der Installer raeumt sie nicht weg.
 # Bis 0.9.8 stand hier nur die erste Zeile. Zurueck blieben damit
 # <ordner>.backup.govee.json mit dem Aktionstoken und - schwerer -
 # <ordner>.backup.geheim.json mit dem gueltigen Govee-API-Schluessel. Der
 # Kommentar oben nennt den WifiScanner-Fall; das hier war derselbe.
 # Der zweite Name stammt aus 0.9.8 und wird nur noch weggeraeumt.
-rm -f "$BASE/config/plugins/$PFOLDER.backup.json"
-rm -f "$BASE/config/plugins/$PFOLDER.backup.govee.json"
-rm -f "$BASE/config/plugins/$PFOLDER.backup.geheim.json"
+# Dazu die .alt, die postinstall.sh bei einer Neuinstallation beiseitelegt
+# (Entscheidung 1 vom 29.09.2026).
+GV_SB="$BASE/config/plugins/$PFOLDER.backup"
+for gv_f in "$GV_SB.json" "$GV_SB.govee.json" "$GV_SB.geheim.json" \
+            "$GV_SB.json.alt" "$GV_SB.govee.json.alt" "$GV_SB.geheim.json.alt"; do
+    rm -f "$gv_f"
+done
 # Die Datei mit dem Cloud-Schluessel liegt im Ordner und geht mit ihm; zur
 # Sicherheit trotzdem ausdruecklich loeschen, falls der Ordner stehen bleibt.
 rm -f "$BASE/config/plugins/$PFOLDER/geheim.json"
@@ -164,5 +188,22 @@ rm -f "$BASE/data/plugins/$PFOLDER.soll_laufen"
 # Gemessen: Pruefung-Govee-0.9.19, Fall C9.
 rm -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 
-echo "<OK> Govee-Plugin entfernt, Sicherungsdatei und Cloud-Schluessel geloescht."
+# Nachzaehlen statt behaupten (I3): bis 0.9.22 stand hier "<OK> ...
+# geloescht" auch dann, wenn rm gescheitert war und die Datei mit dem
+# Cloud-Schluessel noch lag (in WSL gemessen, govee_agenten/installer
+# Befund 4).
+GV_REST=""
+for gv_f in "$GV_SB.json" "$GV_SB.govee.json" "$GV_SB.geheim.json" \
+            "$GV_SB.json.alt" "$GV_SB.govee.json.alt" "$GV_SB.geheim.json.alt" \
+            "$BASE/config/plugins/$PFOLDER/geheim.json"; do
+    if [ -e "$gv_f" ]; then
+        GV_REST="$GV_REST $gv_f"
+    fi
+done
+if [ -n "$GV_REST" ]; then
+    echo "<WARNING> Govee-Plugin entfernt, aber diese Dateien mit Aktionstoken oder"
+    echo "<WARNING> Cloud-Schluessel liegen noch da und muessen von Hand geloescht werden:$GV_REST"
+else
+    echo "<OK> Govee-Plugin entfernt, Sicherungsdatei und Cloud-Schluessel geloescht."
+fi
 exit 0

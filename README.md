@@ -3,9 +3,48 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.21 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.22 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.22
+
+Durchsicht vom 29.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT); jeder Punkt ist gemessen und hat eine
+Gegenprobe, die an 0.9.21 rot und an 0.9.22 grün ist.
+
+**Der Knopf „Einstellungen zurückspielen“ funktioniert jetzt.** Einem Feld des Formulars fehlte das schließende `">`;
+das Dateifeld verschwand darin, und jede Rückspielung wurde als „fremdes Formular“ abgewiesen — seit mindestens
+0.9.10. Die Prüfzeile im Reiter Test, die das hätte finden sollen, zählte nur Zeichenfolgen und zeigte einen Haken; sie
+prüft jetzt vollständige Felder. Außerdem wurde die eigene Sicherung nach einem Speichern abgewiesen
+(`nr_hoechste` fehlte in den Vorgaben), und jeder Wert der Datei wird jetzt geprüft — bisher wurde ein Token als Liste
+zum Wort `Array`, das der Endpunkt annahm. Die Sicherung trägt einen lesbaren Kopf.
+
+**Cloud-Geräte stehen über MQTT nicht mehr dauernd auf „nicht erreichbar“.** Jede LAN-Runde zählte sie als
+Fehlversuch, obwohl sie dort gar nicht gefragt werden. `erreichbar` entsteht jetzt aus dem Alter des Werts, mit
+derselben Rechnung wie am Endpunkt. Bei einer Störung gehen nur `erreichbar`, `alter` und `fehl` hinaus, nicht die
+alten Werte einer toten Leuchte.
+
+**Zustände bleiben im Broker.** `name`, `an`, `hell`, `kelvin`, `r`, `g`, `b`, `hex` und `geraete` gehen retained hinaus,
+Lebenszeichen und Fehlerzähler nie; die Themenliste zeigt das in einer eigenen Spalte. Die Deinstallation räumt die
+zurückbehaltenen Themen ab. Es gehen nur Änderungen hinaus, der volle Satz beim Start und alle 30 Minuten. Eine
+entfernte Leuchte meldet einmal `erreichbar 0`.
+
+**Weiter behoben:**
+- Bei voller Speicherkarte gingen Konfiguration, Zweitschrift und Token verloren.
+- Zwei gleichzeitige Starts ließen den Dienst ohne PID-Datei laufen; jeder Schaltbefehl aus Loxone kam dann mit 503
+  zurück. Ob der Dienst läuft, fragt das Plugin jetzt an seiner Sperre ab.
+- `geraet=0` schaltete still Leuchte 1; jetzt abgewiesen.
+- Eine unter ihrem Namen eingetragene Leuchte galt nie als erreichbar; der Name wird jetzt je Runde aufgelöst.
+- Über die Cloud: Helligkeit 0 schaltet aus (bisher 1 %); „Farbe als Zahl“ wirkt; Szenen und Balken stehen für
+  Cloud-Geräte nicht mehr in der Vorlage „über LoxBerry“.
+- Der Endpunkt hat einen Selbsttest (`?selftest=1&token=…`).
+- Nach jedem Absenden wird umgeleitet; F5 wiederholt nichts mehr. Scheitert ein Schreiben, wird es gemeldet.
+- Eine Neuinstallation spielt keine Zweitschrift einer früheren Installation mehr ein (sie wird als `.alt`
+  beiseitegelegt und genannt); die Zweitschriften stehen auf 0600.
+
+**Für bestehende Anlagen:** Die Vorlagen neu importieren, wenn `ALTER` oder `FEHL` in Loxone verwendet werden — die
+bisherigen Grenzen (86400 bzw. 9999) machten größere Werte zu 0. Loxone Config legt beim Import neu an und überschreibt
+nichts.
 
 ## Neu in 0.9.21
 
@@ -62,9 +101,9 @@ Fassung 0.9.21 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
   schließt `postinstall.sh` mit „es ist nichts weiter einzurichten" statt mit
   den Schritten der Ersteinrichtung.
 
-Unverändert und geprüft: MQTT geht weiterhin ausschließlich flüchtig
-(`publish`) an den UDP-Eingang des Gateways, es gibt keine zurückbehaltenen
-Themen und damit bei der Deinstallation nichts abzuräumen.
+In 0.9.21 ging MQTT noch ausschließlich flüchtig (`publish`) an den
+UDP-Eingang des Gateways; seit 0.9.22 bleiben Zustände zurückbehalten (siehe
+„Neu in 0.9.22").
 
 ## Neu in 0.9.20
 

@@ -48,17 +48,53 @@ header('Content-Type: text/plain; charset=utf-8');
 $gv_cfg = gv_config(false);
 
 /* ---------------- Token ---------------- */
-$gv_soll = (string) $gv_cfg['aktionstoken'];
+$gv_soll_roh = $gv_cfg['aktionstoken'];
+$gv_soll = is_string($gv_soll_roh) ? $gv_soll_roh : '';
 $gv_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
-if ($gv_soll === '') {
+/* Der Selbsttest (C8, Regeln/07 "Der Endpunkt-Selbsttest"): prueft nur das
+ * Token, schaltet nichts, schreibt nichts. Drei Antworten:
+ *   richtiges Token        HTTP 200 SELFTEST;OK=1;TOKEN=OK
+ *   falsches Token         HTTP 403 SELFTEST;OK=0;ERR=TOKEN
+ *   keines eingerichtet    HTTP 403 SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET
+ * Ein Selbsttest ist keine Abkuerzung an der Pruefung vorbei: dieselben drei
+ * Abweisungen wie unten, nur in der Form des Selbsttests. */
+$gv_selbsttest = isset($_GET['selftest']) && is_string($_GET['selftest']) && $_GET['selftest'] === '1';
+if (is_string($gv_soll_roh) && $gv_soll_roh === '') {
     http_response_code(403);
+    if ($gv_selbsttest) {
+        echo "SELFTEST;OK=0;ERR=KEIN_TOKEN_EINGERICHTET\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=KEIN_TOKEN_GESETZT\n";
     echo "Die Plugin-Oberflaeche wurde noch nie geoeffnet - es gibt noch kein Token.\n";
     exit;
 }
+/* Ein gespeichertes Token, das nicht die Form hat, die das Plugin selbst
+ * erzeugt, gilt nicht - fail closed (U4). Bis 0.9.22 liess das Zurueckspielen
+ * einer Sicherung ein Token als Liste zu; gespeichert stand danach das Wort
+ * "Array", und der Endpunkt antwortete auf ?token=Array mit 200
+ * (govee_agenten/oberflaeche, Befund 4, S3). */
+if (!gv_token_gueltig($gv_soll_roh)) {
+    http_response_code(403);
+    if ($gv_selbsttest) {
+        echo "SELFTEST;OK=0;ERR=TOKEN\n";
+        exit;
+    }
+    echo "FEHLER;OK=0;GRUND=TOKEN_UNGUELTIG\n";
+    echo "Das gespeicherte Token hat nicht die Form, die das Plugin erzeugt. Reiter Einbindung in Loxone, Knopf 'Token neu wuerfeln'.\n";
+    exit;
+}
 if (!hash_equals($gv_soll, $gv_ist)) {
     http_response_code(403);
+    if ($gv_selbsttest) {
+        echo "SELFTEST;OK=0;ERR=TOKEN\n";
+        exit;
+    }
     echo "FEHLER;OK=0;GRUND=TOKEN\n";
+    exit;
+}
+if ($gv_selbsttest) {
+    echo "SELFTEST;OK=1;TOKEN=OK\n";
     exit;
 }
 
@@ -96,7 +132,9 @@ function gv_param($name, $muster, $vorgabe = '')
 
 /* "alle" ist zugelassen: beim Lesen ergibt es den Sammelstatus, beim
  * Schalten geht der Befehl an jede eingerichtete Leuchte. */
-$gv_nr       = gv_param('geraet',   '/^([0-9]{1,2}|alle)$/', '1');
+/* 1 bis 99 oder "alle"; 0 und 00 werden abgewiesen (C5). Bis 0.9.22 liess
+ * das Muster sie zu, und gv_geraet() machte daraus Leuchte 1. */
+$gv_nr       = gv_param('geraet',   '/^([1-9][0-9]?|alle)$/', '1');
 /* Acht Ziffern, nicht fuenf: eine Farbe als eine Zahl geht bis 16777215.
  * Die Bereiche prueft danach jede Aktion fuer sich. */
 $gv_wert     = gv_param('wert',     '/^[0-9]{1,8}$/', '');
@@ -308,8 +346,11 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
  * Pruefung der Parameter: wer einen gesperrten oder falsch geschriebenen
  * Befehl schickt, soll das erfahren und nicht "Der Dienst laeuft nicht" -
  * sonst sucht er an der falschen Stelle. */
-if (gv_dienst_pid() === 0) {
-    /* Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts. */
+if (!gv_dienst_laeuft()) {
+    /* Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
+     * Gefragt wird die Sperre des Dienstes, nicht die PID-Datei (C3): nach
+     * einem Doppelstart fehlte sie, und jeder Schaltbefehl bekam 503, obwohl
+     * der Dienst lief (govee_agenten/code, Befund 2). */
     http_response_code(503);
     echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
     echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";

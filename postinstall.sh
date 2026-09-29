@@ -111,8 +111,9 @@ gv_inhalt() {   # $1 Datei, $2 Art
 }
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
-# Zweitschrift zurueckspielen (uebersteht Update UND Neuinstallation) - nach
-# INHALT, nie nach Groesse. Zurueckgespielt wird nur, wenn die Datei KEINEN
+# Zweitschrift zurueckspielen - seit dem Durchgang 29.09.2026 NUR bei einer
+# Aktualisierung (I1, siehe gv_ist_upgrade() unten) - nach INHALT, nie nach
+# Groesse. Zurueckgespielt wird nur, wenn die Datei KEINEN
 # und die Zweitschrift EINEN Inhalt traegt; eine Datei mit Inhalt wird nie
 # ueberschrieben. Eine verdraengte Datei, die nicht leer und nicht "{}" ist,
 # bleibt als <datei>.kaputt.<zeit> (0600) daneben liegen.
@@ -158,30 +159,68 @@ gv_zurueck() {   # $1 Datei, $2 Zweitschrift, $3 Art, $4 Name fuer die Meldung
         echo "<WARNING> liegt unter $2 und kann von Hand kopiert werden."
     fi
 }
-# Der alte Name aus 0.9.8 wird uebernommen, falls er auf dieser Anlage noch
-# liegt - eine alte Zweitschrift soll nicht verwaisen, und zwei Namen fuer
-# dieselbe Sache soll es hinterher nicht mehr geben. Geloescht wird sie erst,
-# wenn sie uebernommen ist oder nichts Neues traegt.
-ALT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json"
-if [ -f "$ALT" ]; then
-    gv_inhalt "$BK" config; gv_n=$?
-    gv_inhalt "$ALT" config; gv_a=$?
-    if [ "$gv_n" = 2 ] || [ "$gv_a" = 2 ]; then
-        echo "<WARNING> Die Zweitschrift aus 0.9.8 liess sich nicht pruefen - sie bleibt liegen: $ALT"
-    elif [ "$gv_n" = 1 ] && [ "$gv_a" = 0 ]; then
-        if cp -p "$ALT" "$BK" 2>/dev/null; then
-            chmod 0600 "$BK" 2>/dev/null
-            echo "<OK> Zweitschrift aus 0.9.8 uebernommen."
-            rm -f "$ALT"
+# ---------- Neuinstallation oder Aktualisierung? (I1) ----------
+#
+# Entscheidung des Hausherrn vom 29.09.2026: zurueckgespielt wird nur bei
+# einer AKTUALISIERUNG. Daran erkannt, dass die Marke aus preupgrade.sh
+# VORHANDEN ist - ohne Altersvergleich: an der Funkwacht gemessen, galt sonst
+# ein Update, bei dem zwischen preupgrade und postinstall mehr als eine Stunde
+# lag, als Neuinstallation, und die Konfiguration landete in .alt. Die 3600 s
+# gelten nur fuer die Startsperre des Dienstes (marke_sperrt() in
+# bin/dienst.sh). Bauform AnkerSolix 0.9.22. Bis 0.9.22 spielte auch eine
+# Neuinstallation liegengebliebene Zweitschriften ein: altes Aktionstoken und
+# Govee-API-Schluessel kamen ohne ein Wort zurueck (in WSL gemessen,
+# govee_agenten/installer Befund 1, Faelle E2/E3). Bei einer Neuinstallation
+# werden sie nach <name>.alt verschoben - damit liest auch die Selbstheilung
+# der Bibliothek (gv_config()) sie nicht mehr (Befund 2) - und EINMAL
+# gemeldet; uninstall/uninstall raeumt die .alt mit ab.
+GV_MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
+gv_ist_upgrade() {
+    [ -f "$GV_MARKE" ]
+}
+if gv_ist_upgrade; then
+    # Der alte Name aus 0.9.8 wird uebernommen, falls er auf dieser Anlage noch
+    # liegt - eine alte Zweitschrift soll nicht verwaisen, und zwei Namen fuer
+    # dieselbe Sache soll es hinterher nicht mehr geben. Geloescht wird sie erst,
+    # wenn sie uebernommen ist oder nichts Neues traegt.
+    ALT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json"
+    if [ -f "$ALT" ]; then
+        gv_inhalt "$BK" config; gv_n=$?
+        gv_inhalt "$ALT" config; gv_a=$?
+        if [ "$gv_n" = 2 ] || [ "$gv_a" = 2 ]; then
+            echo "<WARNING> Die Zweitschrift aus 0.9.8 liess sich nicht pruefen - sie bleibt liegen: $ALT"
+        elif [ "$gv_n" = 1 ] && [ "$gv_a" = 0 ]; then
+            if cp -p "$ALT" "$BK" 2>/dev/null; then
+                chmod 0600 "$BK" 2>/dev/null
+                echo "<OK> Zweitschrift aus 0.9.8 uebernommen."
+                rm -f "$ALT"
+            else
+                echo "<WARNING> Die Zweitschrift aus 0.9.8 liess sich nicht uebernehmen - sie bleibt liegen: $ALT"
+            fi
         else
-            echo "<WARNING> Die Zweitschrift aus 0.9.8 liess sich nicht uebernehmen - sie bleibt liegen: $ALT"
+            rm -f "$ALT"
         fi
-    else
-        rm -f "$ALT"
+    fi
+    gv_zurueck "$CF" "$BK" config "govee.json"
+    gv_zurueck "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" geheim "geheim.json"
+else
+    GV_BEISEITE=""
+    for gv_bk in "$BK" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json" \
+                 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json"; do
+        [ -f "$gv_bk" ] || continue
+        if mv -f "$gv_bk" "$gv_bk.alt" 2>/dev/null; then
+            chmod 600 "$gv_bk.alt" 2>/dev/null
+            GV_BEISEITE="$GV_BEISEITE $gv_bk.alt"
+        else
+            echo "<WARNING> $gv_bk liess sich nicht beiseitelegen. Sie wurde NICHT eingespielt,"
+            echo "<WARNING> liegt aber noch da; bitte von Hand entfernen."
+        fi
+    done
+    if [ -n "$GV_BEISEITE" ]; then
+        echo "<WARNING> Neuinstallation: Einstellungen einer frueheren Installation wurden nicht"
+        echo "<WARNING> uebernommen, sondern beiseitegelegt:$GV_BEISEITE"
     fi
 fi
-gv_zurueck "$CF" "$BK" config "govee.json"
-gv_zurueck "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" geheim "geheim.json"
 
 # ---------- PHP pruefen ----------
 if ! command -v php >/dev/null 2>&1; then
@@ -221,6 +260,16 @@ fi
 # ohnehin rekursiv 755 (setrights("755","1",...) in plugininstall.pl). Ein
 # zusaetzliches chmod schadet nicht, verdeckt aber, wenn anderswo eines fehlt.
 chown -R loxberry:loxberry "$PBIN" "$PDATA" "$PLOG" "$PCONFIG" 2>/dev/null
+
+# Beide Zweitschriften auf 0600, gleich auf welchem Weg sie entstanden sind
+# (I2): gv_zurueck() setzte nur das Ziel der Rueckspielung, eine Zweitschrift
+# mit 0644 - auch die mit dem Cloud-Schluessel - blieb so (in WSL gemessen,
+# govee_agenten/installer Befund 3). Eine fehlende Datei ist kein Fehler.
+for gv_bk in "$BK" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json"; do
+    if [ -f "$gv_bk" ]; then
+        chmod 600 "$gv_bk" 2>/dev/null
+    fi
+done
 
 echo "<OK> Installation abgeschlossen."
 # Die Erstanleitung nur, wenn noch kein Geraet eingerichtet ist - entschieden
