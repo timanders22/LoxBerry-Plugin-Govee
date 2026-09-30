@@ -578,7 +578,7 @@ function gv_endpunkt_probe($erzwingen = false, $hoechstalter = 300)
         $antwort = curl_exec($ch);
         $erg['code'] = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $fehler = curl_error($ch);
-        curl_close($ch);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
         if ($antwort === false) {
             $erg['text'] = $fehler;
         } else {

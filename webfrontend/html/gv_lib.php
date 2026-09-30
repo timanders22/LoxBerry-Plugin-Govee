@@ -2429,7 +2429,7 @@ function gv_cloud_anfrage($pfad, $daten = null)
     $antwort = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curlfehler = curl_error($ch);
-    curl_close($ch);
+    if (PHP_VERSION_ID < 80000) { curl_close($ch); }
 
     if ($antwort === false) {
         return array(null, 'Die Cloud war nicht erreichbar: ' . $curlfehler);
