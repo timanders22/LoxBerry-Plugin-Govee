@@ -516,9 +516,13 @@ function gv_geheim_speichern($g)
  *          0 heisst: das Geraet kann keine Segmente, die Balkenanzeige und
  *          die Segmentbefehle werden dann abgewiesen statt ins Leere gesendet.
  */
-function gv_geraete()
+function gv_geraete($cfg = null)
 {
-    $cfg = gv_config();
+    /* $cfg: fuer den Endpunkt, der nur ungeheilt liest (gv_config(false));
+     * ohne Angabe wie bisher. */
+    if (!is_array($cfg)) {
+        $cfg = gv_config();
+    }
     $out = array();
     $n = 0;
     foreach ((array) $cfg['geraete'] as $g) {
@@ -1084,6 +1088,164 @@ function gv_dienst($befehl)
 /* Obergrenze fuer eine Wartezeit, die aus einer Web-Anfrage kommt: der
  * Webserver bricht typischerweise nach 15 bis 30 Sekunden mit 504 ab. */
 define('GV_WARTEN_WEB', 10);
+
+/* ==================================================================
+ * Befehlsbremse (X-7, Entscheidung 19 vom 01.10.2026)
+ *
+ * Derselbe Sollwert innerhalb von GV_BREMSE_S Sekunden geht nicht erneut
+ * hinaus; der Endpunkt antwortet SET;OK=1;...;UNVERAENDERT=1. Ein Loxone-
+ * Ausgang, der bei jeder Aenderung eines Eingangs denselben Wert neu sendet,
+ * schickte sonst jedes Mal ein UDP-Paket an die Leuchte bzw. eine Anfrage
+ * an die Govee-Cloud (deren Anfragegrenze gilt fuer das ganze Konto).
+ *
+ * Nur Sollwerte (ein, aus, hell, kelvin, farbe); Szenen, Musik, Balken,
+ * Segmente und rohe ptReal-Befehle sind Ereignisse und gehen immer hinaus.
+ * Kein Mindestabstand fuer einen ANDEREN Wert (kein 429). Vorbild EVCC 0.9.37.
+ * ================================================================== */
+define('GV_BREMSE_S', 60);
+
+/** Groesse und Wert eines Sollwert-Befehls - array(groesse, wert) - oder null fuer ein Ereignis. */
+function gv_bremse_wert(array $b)
+{
+    $a = isset($b['aktion']) ? (string) $b['aktion'] : '';
+    if ($a === 'ein' || $a === 'aus') {
+        return array('an', $a === 'ein' ? '1' : '0');
+    }
+    if (($a === 'hell' || $a === 'kelvin') && isset($b['wert'])) {
+        return array($a, (string) (int) $b['wert']);
+    }
+    if ($a === 'farbe') {
+        if (isset($b['r'], $b['g'], $b['b'])) {
+            return array('farbe', sprintf('%02x%02x%02x', (int) $b['r'], (int) $b['g'], (int) $b['b']));
+        }
+        if (isset($b['wert'])) {
+            return array('farbe', sprintf('%06x', (int) $b['wert']));
+        }
+    }
+    return null;
+}
+
+/** Die Leuchtennummern, die ein Befehl trifft (nur eingerichtete; "alle" = jede). */
+function gv_bremse_ziele(array $b, $cfg)
+{
+    $g = gv_geraete($cfg);
+    if (isset($b['geraet']) && $b['geraet'] === 'alle') {
+        return array_keys($g);
+    }
+    $nr = isset($b['geraet']) ? (int) $b['geraet'] : 0;
+    return isset($g[$nr]) ? array($nr) : array();
+}
+
+/** Den Merker oeffnen und sperren (LOCK_EX). Rueckgabe: Handle oder false (dann faellt die Bremse geschlossen aus). */
+function gv_bremse_oeffnen()
+{
+    $f = gv_paths()['datadir'] . '/befehlsbremse.json';
+    clearstatcache(true, $f);
+    if (is_link($f) || (file_exists($f) && !is_file($f))) {
+        return false;
+    }
+    $fh = @fopen($f, 'c+');
+    if ($fh === false) {
+        return false;
+    }
+    if (!@flock($fh, LOCK_EX)) {
+        @fclose($fh);
+        return false;
+    }
+    return $fh;
+}
+
+function gv_bremse_lesen($fh)
+{
+    @rewind($fh);
+    $d = json_decode((string) @stream_get_contents($fh), true);
+    return is_array($d) ? $d : array();
+}
+
+/**
+ * Darf der Befehl hinaus? Rueckgabe array('stand' => frei|gleich|merker, 'seit' => Sekunden).
+ *   frei    senden (kein Sollwert, kein Ziel, anderer oder alter Wert)
+ *   gleich  derselbe Wert ging an JEDES Ziel vor weniger als GV_BREMSE_S s
+ *   merker  der Merker laesst sich nicht oeffnen - geschlossen ausfallen (503)
+ */
+function gv_bremse_pruefen(array $b, $cfg)
+{
+    $frei = array('stand' => 'frei', 'seit' => 0);
+    $w = gv_bremse_wert($b);
+    if ($w === null) {
+        return $frei;
+    }
+    $ziele = gv_bremse_ziele($b, $cfg);
+    if (!$ziele) {
+        return $frei;       // unbekannte Leuchte: gv_befehl_absetzen() meldet es
+    }
+    $fh = gv_bremse_oeffnen();
+    if ($fh === false) {
+        return array('stand' => 'merker', 'seit' => 0);
+    }
+    $m = gv_bremse_lesen($fh);
+    @flock($fh, LOCK_UN);
+    @fclose($fh);
+    $jetzt = time();
+    $seit = 0;
+    foreach ($ziele as $nr) {
+        $k = $nr . '|' . $w[0];
+        if (!isset($m[$k]) || !is_array($m[$k]) || !isset($m[$k]['w'], $m[$k]['t'])
+            || (string) $m[$k]['w'] !== $w[1]) {
+            return $frei;
+        }
+        $s = $jetzt - (int) $m[$k]['t'];
+        /* Ein Stand aus der Zukunft (Uhrsprung) bremst nicht. */
+        if ($s < 0 || $s >= GV_BREMSE_S) {
+            return $frei;
+        }
+        $seit = max($seit, $s);
+    }
+    return array('stand' => 'gleich', 'seit' => $seit);
+}
+
+/**
+ * Den GESENDETEN Wert merken - nur nach Rueckgabe 1 des Dienstes. Ein Wert
+ * macht die Groessen ungueltig, die er mit veraendern kann: hell, kelvin und
+ * farbe schalten eine Leuchte womoeglich ein; kelvin und farbe verdraengen
+ * einander. Rueckgabe: true, wenn geschrieben.
+ */
+function gv_bremse_merken(array $b, $cfg)
+{
+    $w = gv_bremse_wert($b);
+    if ($w === null) {
+        return true;
+    }
+    $ziele = gv_bremse_ziele($b, $cfg);
+    if (!$ziele) {
+        return true;
+    }
+    $fh = gv_bremse_oeffnen();
+    if ($fh === false) {
+        return false;
+    }
+    $m = gv_bremse_lesen($fh);
+    $jetzt = time();
+    foreach ($m as $k => $e) {      // Abgelaufenes faellt heraus - die Datei bleibt klein.
+        if (!is_array($e) || !isset($e['t']) || $jetzt - (int) $e['t'] >= GV_BREMSE_S
+            || $jetzt - (int) $e['t'] < 0) {
+            unset($m[$k]);
+        }
+    }
+    $verdraengt = array('an' => array(), 'hell' => array('an'),
+                        'kelvin' => array('an', 'farbe'), 'farbe' => array('an', 'kelvin'));
+    foreach ($ziele as $nr) {
+        foreach ($verdraengt[$w[0]] as $v) {
+            unset($m[$nr . '|' . $v]);
+        }
+        $m[$nr . '|' . $w[0]] = array('w' => $w[1], 't' => $jetzt);
+    }
+    $js = (string) json_encode($m);
+    $ok = @ftruncate($fh, 0) && @rewind($fh) && @fwrite($fh, $js) === strlen($js) && @fflush($fh);
+    @flock($fh, LOCK_UN);
+    @fclose($fh);
+    return $ok;
+}
 
 function gv_befehl_absetzen($befehl, $wartezeit = null)
 {
@@ -3428,8 +3590,12 @@ function gv_t($schluessel)
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], Zahl uebernommener
  * Werte).
  */
-function gv_sicherung_lesen($roh)
+function gv_sicherung_lesen($roh, &$namen = null)
 {
+    /* X-3: $namen sammelt die Namen der beanstandeten Schluessel (nie Werte).
+     * So prueft gv_rueckspiel_befund() die eigene Sicherung mit DIESER
+     * Funktion - eine zweite Pruefliste waere eine zweite Wahrheit. */
+    $namen = array();
     $mangel = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten) || ($daten && gv_ist_liste($daten))) {
@@ -3454,6 +3620,7 @@ function gv_sicherung_lesen($roh)
          * gv_e(), und ein & erschien doppelt maskiert (U6). */
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(gv_t('EINST.SICH_FREMD'), $k);
+            $namen[] = $k;
             continue;
         }
         $gesehen++;
@@ -3465,6 +3632,7 @@ function gv_sicherung_lesen($roh)
         $wm = gv_sicherung_wert_pruefen($k, $w);
         if ($wm) {
             $mangel = array_merge($mangel, $wm);
+            $namen[] = $k;
             continue;
         }
         if (array_key_exists($k, $neu)) {
@@ -3491,6 +3659,7 @@ function gv_sicherung_lesen($roh)
     }
     if ($fehlend) {
         $mangel[] = sprintf(gv_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
+        $namen = array_merge($namen, $fehlend);
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
 }
@@ -3519,6 +3688,27 @@ function gv_regeln()
                              'kmax' => array(1000, 10000)),
         'schalter'  => array('mqtt_ein', 'steuerung_ein', 'cloud_ein', 'pt_frei'),
     );
+}
+
+/**
+ * Welche Formularfelder tragen Zeichen, die das Formular bis 0.9.24 still
+ * entfernte (Steuerzeichen, gerade Anfuehrungszeichen)? Rueckgabe:
+ * Feld => Sprachschluessel der Spaltenueberschrift. Seit Entscheidung 16
+ * (30.09.2026) wird so ein Wert beanstandet statt zurechtgebogen; dieselben
+ * Zeichen weist gv_sich_text() beim Zurueckspielen ab.
+ */
+function gv_zeichen_felder(array $werte)
+{
+    $titel = array('g_name' => 'EINST.T_NAME', 'g_ip' => 'EINST.T_IP', 'g_sku' => 'EINST.T_SKU',
+                   'g_device' => 'EINST.T_DEVICE', 's_name' => 'EINST.T_SZENE_NAME',
+                   's_sku' => 'EINST.T_SKU', 's_cmd' => 'EINST.T_SZENE_CMD');
+    $aus = array();
+    foreach ($werte as $f => $w) {
+        if (preg_match('/[\x00-\x1F\x7F"\']/', (string) $w)) {
+            $aus[$f] = isset($titel[$f]) ? $titel[$f] : $f;
+        }
+    }
+    return $aus;
 }
 
 /** Eine Liste (0, 1, 2 ...) und keine Zuordnung mit Schluesseln? */
@@ -3780,8 +3970,41 @@ function gv_sicherung_datei()
         '_stand'   => (gv_fassung() !== '' ? gv_fassung() : 'unbekannt') . ', ' . date('Y-m-d H:i:s'),
         '_hinweis' => gv_klartext('EINST.SICH_KOPF_HINWEIS'),
     );
-    return json_encode($kopf + array_merge(gv_config(), gv_geheim()),
+    $daten = array_merge(gv_config(), gv_geheim());
+    /* X-3: Wuerde das Zurueckspielen genau diese Datei abweisen, sagt es der
+     * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
+    $warn = gv_rueckspiel_befund($daten);
+    if ($warn) {
+        $kopf['_warnung'] = sprintf(gv_klartext('EINST.SICH_X3_KOPF'), implode(', ', $warn));
+    }
+    return json_encode($kopf + $daten,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen bestehen?
+ *
+ * Geprueft mit derselben gv_sicherung_lesen() wie das Zurueckspielen, ohne
+ * etwas zu schreiben. $daten ist der Inhalt ohne Kopf (Konfiguration und
+ * Cloud-Schluessel); ohne Angabe der gespeicherte Stand. Rueckgabe: die
+ * Namen der Schluessel, die abgewiesen wuerden (nie Werte); leer, wenn die
+ * Sicherung durchginge.
+ */
+function gv_rueckspiel_befund($daten = null)
+{
+    if (!is_array($daten)) {
+        $daten = array_merge(gv_config(), gv_geheim());
+    }
+    $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        return array('json');
+    }
+    $namen = array();
+    list($neu) = gv_sicherung_lesen($js, $namen);
+    if ($neu !== null) {
+        return array();
+    }
+    return $namen ? array_values(array_unique(array_map('strval', $namen))) : array('json');
 }
 
 /**
@@ -3790,7 +4013,7 @@ function gv_sicherung_datei()
  * verworfen. Aktionstoken und Cloud-Schluessel werden vor dem Schreiben
  * unkenntlich gemacht. Bauform ak_einmal_*() aus AnkerSolix 0.9.21.
  */
-function gv_einmal_schreiben($meldungen, $fehler, $test)
+function gv_einmal_schreiben($meldungen, $fehler, $test, $hinweise = array(), $eingaben = null)
 {
     $p = gv_paths();
     $geheim = array();
@@ -3811,6 +4034,11 @@ function gv_einmal_schreiben($meldungen, $fehler, $test)
         'meldungen' => array_map($weg, array_values((array) $meldungen)),
         'fehler'    => array_map($weg, array_values((array) $fehler)),
         'test'      => $weg($test),
+        // b1: Hinweise, die das Speichern nicht verhinderten
+        'hinweise'  => array_map($weg, array_values((array) $hinweise)),
+        // X-2: nur nach einer Beanstandung gesetzt, Geheimnisse nie darin
+        // (gv_eingaben_sammeln()).
+        'eingaben'  => is_array($eingaben) ? $eingaben : null,
     ), 0600);
 }
 
@@ -3832,7 +4060,180 @@ function gv_einmal_lesen()
         'meldungen' => $liste(isset($d['meldungen']) ? $d['meldungen'] : null),
         'fehler'    => $liste(isset($d['fehler']) ? $d['fehler'] : null),
         'test'      => isset($d['test']) && is_scalar($d['test']) ? (string) $d['test'] : '',
+        'hinweise'  => $liste(isset($d['hinweise']) ? $d['hinweise'] : null),
+        'eingaben'  => isset($d['eingaben']) && is_array($d['eingaben']) ? $d['eingaben'] : null,
     );
+}
+
+/* ---------------- Eingaben nach einer Beanstandung (X-2) ----------------
+ *
+ * Regeln/04 "Nach einer Beanstandung stehen die eingetippten Werte wieder im
+ * Formular" (Hausregel seit 30.09.2026). Seit der Umleitung nach jedem POST
+ * (U5) zeigte der GET danach die gespeicherten Werte: wer acht Zeilen richtig
+ * und eine falsch eintrug, tippte alles neu - und seit Entscheidung 16 wird
+ * bei einer Beanstandung gar nichts gespeichert.
+ *
+ * Nur nach einer Beanstandung, nur das eine Formular, nur seine Felder. Nie
+ * Geheimnisse: der Cloud-Schluessel steht in keiner Liste, und ein Wert, der
+ * das Aktionstoken oder den gespeicherten Cloud-Schluessel enthaelt, reist
+ * nicht (das Feld zeigt dann den gespeicherten Stand). Bauform wie
+ * zd_eingabe*() aus Zendure (Verbesserungsbau 01.10.2026). */
+
+/** Zeilen der beiden Tabellen im Formular Einstellungen (Geraete, eigene Szenen). */
+define('GV_FORM_ZEILEN', 8);
+
+/** Die Felder je Formular: text (ein Wert), liste (je Tabellenzeile), haken. */
+function gv_eingabe_felder($form)
+{
+    if ($form === 'settings') {
+        return array(
+            'text'  => array_keys(gv_regeln()['zahlen']),
+            /* g_nr (verstecktes Feld) reist bewusst NICHT: die Nummer kommt
+             * aus der gespeicherten Zeile derselben Stelle. Reiste eine
+             * beanstandete Nummer mit, stuende sie beim naechsten Absenden
+             * wieder da (Entscheidung 19, FEHLER_NR). */
+            'liste' => array('g_name', 'g_art', 'g_ip', 'g_sku', 'g_device', 'g_pixel',
+                             'g_kmin', 'g_kmax', 'g_pt', 's_name', 's_sku', 's_cmd'),
+            'haken' => array('steuerung_ein', 'pt_frei', 'cloud_ein'),
+        );
+    }
+    if ($form === 'mqtt') {
+        return array('text' => array('mqtt_topic'), 'liste' => array(), 'haken' => array('mqtt_ein'));
+    }
+    return null;
+}
+
+/**
+ * Die eingetippten Werte eines Formulars aus $_POST, fuer die Einmalmeldung.
+ * Ein Wert, der kein gueltiges UTF-8 ist, laenger als 512 Byte oder ein
+ * Geheimnis enthaelt, reist nicht mit (sonst scheiterte json_encode und mit
+ * ihm die Umleitung) - das Feld zeigt dann den gespeicherten Stand.
+ */
+function gv_eingaben_sammeln($form, array $beanstandet)
+{
+    $f = gv_eingabe_felder($form);
+    if ($f === null || !$beanstandet) {
+        return null;
+    }
+    $cfg = gv_config(false);
+    $g = gv_geheim();
+    $geheim = array();
+    foreach (array(isset($cfg['aktionstoken']) ? $cfg['aktionstoken'] : '',
+                   isset($g['cloud_key']) ? $g['cloud_key'] : '') as $w) {
+        if (is_string($w) && strlen($w) >= 4) {
+            $geheim[] = $w;
+        }
+    }
+    $ok = function ($v) use ($geheim) {
+        if (!is_string($v) || strlen($v) > 512 || preg_match('//u', $v) !== 1) {
+            return false;
+        }
+        foreach ($geheim as $s) {
+            if (strpos($v, $s) !== false) {
+                return false;
+            }
+        }
+        return true;
+    };
+    $werte = array();
+    foreach ($f['text'] as $k) {
+        if (isset($_POST[$k]) && $ok($_POST[$k])) {
+            $werte[$k] = $_POST[$k];
+        }
+    }
+    foreach ($f['liste'] as $k) {
+        if (isset($_POST[$k]) && is_array($_POST[$k])) {
+            $l = array();
+            for ($i = 0; $i < GV_FORM_ZEILEN; $i++) {
+                $l[] = (isset($_POST[$k][$i]) && $ok($_POST[$k][$i])) ? $_POST[$k][$i] : null;
+            }
+            $werte[$k] = $l;
+        }
+    }
+    foreach ($f['haken'] as $k) {
+        $werte[$k] = isset($_POST[$k]) ? '1' : '';
+    }
+    return array('form' => $form, 'werte' => $werte,
+                 'beanstandet' => array_values(array_unique(array_map('strval', $beanstandet))));
+}
+
+/** Die Eingaben aus der Einmalmeldung annehmen (nur bekannte Felder, nur Text); ohne Argument: der Stand. */
+function gv_eingaben_setzen($roh = null)
+{
+    static $ein = array('form' => '', 'werte' => array(), 'beanstandet' => array());
+    if ($roh === null) {
+        return $ein;
+    }
+    if (!is_array($roh) || !isset($roh['form']) || !is_string($roh['form'])) {
+        return $ein;
+    }
+    $f = gv_eingabe_felder($roh['form']);
+    if ($f === null) {
+        return $ein;
+    }
+    $w = isset($roh['werte']) && is_array($roh['werte']) ? $roh['werte'] : array();
+    $werte = array();
+    foreach (array_merge($f['text'], $f['haken']) as $k) {
+        if (isset($w[$k]) && is_string($w[$k])) {
+            $werte[$k] = $w[$k];
+        }
+    }
+    foreach ($f['liste'] as $k) {
+        if (isset($w[$k]) && is_array($w[$k])) {
+            $l = array();
+            for ($i = 0; $i < GV_FORM_ZEILEN; $i++) {
+                $l[$i] = (isset($w[$k][$i]) && is_string($w[$k][$i])) ? $w[$k][$i] : null;
+            }
+            $werte[$k] = $l;
+        }
+    }
+    $bean = array();
+    if (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) {
+        foreach ($roh['beanstandet'] as $b) {
+            if (is_string($b) && preg_match('/^[a-z_]{1,20}(#[0-7])?\z/', $b)) {
+                $bean[] = $b;
+            }
+        }
+    }
+    if ($bean) {
+        $ein = array('form' => $roh['form'], 'werte' => $werte, 'beanstandet' => $bean);
+    }
+    return $ein;
+}
+
+/** Wert eines Felds der Tabellen (Zeile $i), nur im Formular Einstellungen. */
+function gv_eingabe_zeile($feld, $i, $gespeichert)
+{
+    $ein = gv_eingaben_setzen();
+    if ($ein['form'] === 'settings' && isset($ein['werte'][$feld]) && is_array($ein['werte'][$feld])
+        && isset($ein['werte'][$feld][$i]) && is_string($ein['werte'][$feld][$i])) {
+        return $ein['werte'][$feld][$i];
+    }
+    return $gespeichert;
+}
+
+/** Die gespeicherten Werte eines Formulars mit den Eingaben ueberlagern (nur Schluessel der Konfiguration). */
+function gv_eingaben_ueberlagern(array $cfg, $form)
+{
+    $ein = gv_eingaben_setzen();
+    if ($ein['form'] !== $form) {
+        return $cfg;
+    }
+    $f = gv_eingabe_felder($form);
+    foreach (array_merge($f['text'], $f['haken']) as $k) {
+        if (array_key_exists($k, $cfg) && isset($ein['werte'][$k]) && is_string($ein['werte'][$k])) {
+            $cfg[$k] = $ein['werte'][$k];
+        }
+    }
+    return $cfg;
+}
+
+/** Das Merkmal am beanstandeten Feld: rot umrandet und fuer Vorleseprogramme markiert. */
+function gv_markierung($feld)
+{
+    $ein = gv_eingaben_setzen();
+    return in_array((string) $feld, $ein['beanstandet'], true)
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 }
 
 /**

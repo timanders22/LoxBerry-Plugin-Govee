@@ -3,9 +3,32 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.23 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.24 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.24
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an Attrappen
+unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Bei einer Beanstandung wird nichts gespeichert – auch nicht der
+  Cloud-Schlüssel.** Bis 0.9.23 wurde ein neuer Schlüssel geschrieben (oder ein
+  angehakter gelöscht), selbst wenn ein anderes Feld beanstandet war. Die
+  eingetippten Werte stehen wieder im Formular, das Feld ist rot umrandet.
+* Anführungszeichen im Namen, eine ungültige oder doppelte Gerätenummer, eine
+  unbekannte Geräteart und `/` am Präfixrand werden beanstandet statt still
+  bereinigt; nur Leerraum am Rand wird weiter still entfernt.
+* Hinweis beim Speichern, wenn statt einer festen IP ein Name eingetragen ist.
+* **Befehlsbremse:** Derselbe Sollwert (ein/aus, Helligkeit, Farbtemperatur,
+  Farbe) innerhalb von 60 s wird nicht erneut gesendet; die Antwort ist
+  `UNVERAENDERT=1`. Szenen und andere Ereignisse gehen immer hinaus.
+* Neu `preinstall.sh`: legt bei einer Neuinstallation alte Zweitschriften vor
+  dem Kopieren als `.alt` beiseite, damit eine frische Installation kein altes
+  Token übernimmt.
+* „Einstellungen sichern“ warnt gelb, wenn das Zurückspielen die Datei abweisen
+  würde (`_warnung`, nur Namen).
 
 ## Neu in 0.9.23
 
@@ -501,6 +524,13 @@ bestehende Suchmuster in Loxone gültig bleiben:
 
 Die Statuszeile trägt hinten zusätzlich `FEHL` — die Zahl der Abrufe in Folge,
 bei denen dieses Gerät nicht geantwortet hat.
+
+`ein`, `aus`, `hell`, `kelvin` und `farbe` mit **demselben** Wert an dieselbe
+Leuchte innerhalb von 60 s gehen nicht erneut hinaus; die Antwort lautet dann
+`SET;OK=1;AKTION=…;UNVERAENDERT=1`. Ein anderer Wert geht sofort hinaus, eine
+Wartezeit gibt es nicht. `szene`, `balken`, `segment`, `musik` und `pt` sind
+Ereignisse und gehen immer hinaus. Lässt sich der Merker dieser Bremse nicht
+öffnen, antworten die fünf Befehle mit 503 `GRUND=BREMSE_MERKER`.
 
 Das Token wird beim ersten Öffnen der Oberfläche erzeugt und mit `hash_equals`
 verglichen. Schaltende Aufrufe sind ab Werk gesperrt; rohe `ptReal`-Befehle

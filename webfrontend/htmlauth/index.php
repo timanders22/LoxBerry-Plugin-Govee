@@ -75,6 +75,11 @@ if (isset($_POST['activetab']) && preg_match($gv_muster, (string) $_POST['active
 
 $gv_meldungen = array();
 $gv_fehler = array();      // gesammelt, nicht ueberschrieben
+/* Hinweise, die das Speichern NICHT verhindern (b1: Name statt IP). Eigene
+ * Liste, damit sie nicht unter "Bitte pruefen" stehen und nichts sperren. */
+$gv_hinweise = array();
+// X-2: die eingetippten Werte des beanstandeten Formulars (sonst null).
+$gv_eingaben = null;
 $gv_testausgabe = '';
 $gv_post = (isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : '') === 'POST';
 /* Jeder POST endet mit 303, auch einer mit ungueltigem Merkmal (U5). */
@@ -104,6 +109,8 @@ if (!$gv_post_roh) {
     if ($gv_einmal) {
         $gv_meldungen = $gv_einmal['meldungen'];
         $gv_fehler = array_merge($gv_fehler, $gv_einmal['fehler']);
+        $gv_hinweise = $gv_einmal['hinweise'];
+        gv_eingaben_setzen($gv_einmal['eingaben']);     // X-2
         $gv_testausgabe = $gv_einmal['test'];
     }
 }
@@ -213,6 +220,8 @@ if ($gv_post && isset($_POST['gv_zurueck'])) {
 /* ---------------- Einstellungen speichern ---------------- */
 if ($gv_post && isset($_POST['speichern'])) {
     $gv_cfg = gv_config();
+    $gv_n0 = count($gv_fehler);   // Entscheidung 16 (Einstellungen)
+    $gv_bean = array();           // X-2: beanstandete Felder
 
     /* Geraetetabelle: bis zu acht Zeilen. Nur Zeilen mit den noetigen Angaben
      * werden uebernommen; unvollstaendige werden gemeldet, nicht verschluckt. */
@@ -235,12 +244,16 @@ if ($gv_post && isset($_POST['speichern'])) {
     for ($gv_i = 0; $gv_i < 8; $gv_i++) {
         $gv_hol = function ($feld) use ($gv_i) {
             $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
-            /* Nur Steuerzeichen, Anfuehrungszeichen und Leerraum entfernen -
-             * ein hartes preg_replace auf eine Positivliste zerstoert
-             * eingefuegte Werte (belegt am ACTi-Plugin am 26.07.2026). */
-            return isset($a[$gv_i]) ? trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $a[$gv_i])) : '';
+            /* Nur Leerraum am Rand entfernen. Bis 0.9.24 wurden hier auch
+             * Steuer- und Anfuehrungszeichen STILL entfernt ("Tim's Lampe"
+             * wurde "Tims Lampe") - seit Entscheidung 16 ist das eine
+             * Beanstandung (gv_zeichen_felder() unten). Ein hartes
+             * preg_replace auf eine Positivliste zerstoerte eingefuegte Werte
+             * (belegt am ACTi-Plugin am 26.07.2026). */
+            return (isset($a[$gv_i]) && is_scalar($a[$gv_i])) ? trim((string) $a[$gv_i]) : '';
         };
-        $gv_art = $gv_hol('g_art') === 'cloud' ? 'cloud' : 'lan';
+        $gv_art_roh = $gv_hol('g_art');
+        $gv_art = $gv_art_roh === 'cloud' ? 'cloud' : 'lan';
         $gv_ip = $gv_hol('g_ip');
         $gv_sku = $gv_hol('g_sku');
         $gv_dev = $gv_hol('g_device');
@@ -248,9 +261,34 @@ if ($gv_post && isset($_POST['speichern'])) {
         if ($gv_ip === '' && $gv_sku === '' && $gv_dev === '' && $gv_nm === '') {
             continue;   // leere Zeile
         }
+        /* Stilles Zurechtbiegen ist eine Beanstandung (Entscheidung 16,
+         * Nachtrag B vom 01.10.2026): Zeichen, die bisher still entfielen,
+         * eine unbekannte Art (bisher still LAN) und eine unbekannte
+         * Grundbefehl-Auswahl (bisher still 0). Nichts wird gespeichert. */
+        $gv_zf = gv_zeichen_felder(array('g_name' => $gv_nm, 'g_ip' => $gv_ip,
+                                         'g_sku' => $gv_sku, 'g_device' => $gv_dev));
+        if ($gv_zf) {
+            foreach (array_keys($gv_zf) as $gv_bf) {
+                $gv_bean[] = $gv_bf . '#' . $gv_i;     // X-2
+            }
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_ZEICHEN'), $gv_i + 1,
+                implode(', ', array_map('gv_t', array_values($gv_zf))));
+            continue;
+        }
+        if ($gv_art_roh !== 'lan' && $gv_art_roh !== 'cloud') {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_ART'), $gv_i + 1);
+            $gv_bean[] = 'g_art#' . $gv_i;
+            continue;
+        }
+        if (!in_array($gv_hol('g_pt'), array('', '0', '1'), true)) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_PT'), $gv_i + 1);
+            $gv_bean[] = 'g_pt#' . $gv_i;
+            continue;
+        }
         if ($gv_art === 'lan') {
             if ($gv_ip === '') {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_IP_FEHLT'), $gv_i + 1);
+                $gv_bean[] = 'g_ip#' . $gv_i;
                 continue;
             }
             // IPv4 oder Hostname zulassen - beides ist gebraeuchlich.
@@ -259,16 +297,27 @@ if ($gv_post && isset($_POST['speichern'])) {
             if (!preg_match(gv_regeln()['ip4'], $gv_ip)
                 && !preg_match(gv_regeln()['host'], $gv_ip)) {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_IP'), $gv_i + 1);
+                $gv_bean[] = 'g_ip#' . $gv_i;
                 continue;
+            }
+            /* b1: ein Name statt einer festen IP ist erlaubt, kostet aber in
+             * jeder Runde eine Namensaufloesung - bei totem Namensdienst die
+             * Rundenzeit. Nur ein Hinweis; gespeichert wird trotzdem. */
+            if (!preg_match(gv_regeln()['ip4'], $gv_ip)) {
+                $gv_hinweise[] = sprintf(gv_t('EINST.HINWEIS_NAME_STATT_IP'), $gv_i + 1, $gv_ip);
             }
         } else {
             if ($gv_sku === '' || $gv_dev === '') {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_CLOUD_IDS'), $gv_i + 1);
+                $gv_bean[] = 'g_sku#' . $gv_i;
+                $gv_bean[] = 'g_device#' . $gv_i;
                 continue;
             }
             if (!preg_match(gv_regeln()['sku'], $gv_sku)
                 || !preg_match(gv_regeln()['device'], $gv_dev)) {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_CLOUD_MUSTER'), $gv_i + 1);
+                $gv_bean[] = 'g_sku#' . $gv_i;
+                $gv_bean[] = 'g_device#' . $gv_i;
                 continue;
             }
         }
@@ -283,6 +332,7 @@ if ($gv_post && isset($_POST['speichern'])) {
         $gv_klein = strtolower($gv_nm);
         if ($gv_nm !== '' && isset($gv_namen_belegt[$gv_klein])) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_NAME_DOPPELT'), $gv_i + 1, $gv_nm);
+            $gv_bean[] = 'g_name#' . $gv_i;
             continue;
         }
         if ($gv_nm !== '') {
@@ -291,12 +341,20 @@ if ($gv_post && isset($_POST['speichern'])) {
         /* Die Nummer kommt aus dem versteckten Feld der Zeile und wird
          * mitgeschleppt. Nur eine Zeile ohne Nummer bekommt eine neue. */
         $gv_znr = $gv_hol('g_nr');
-        if (preg_match('/^[0-9]{1,3}$/', $gv_znr) && (int) $gv_znr > 0
+        if ($gv_znr === '') {
+            $gv_znr = 0;        // neue Zeile: bekommt unten die naechste freie Nummer
+        } elseif (preg_match('/^[0-9]{1,3}$/', $gv_znr) && (int) $gv_znr > 0
             && !isset($gv_nr_vergeben[(int) $gv_znr])) {
             $gv_znr = (int) $gv_znr;
             $gv_nr_vergeben[$gv_znr] = true;
         } else {
-            $gv_znr = 0;
+            /* Bis 0.9.24 wurde eine ungueltige oder doppelte Nummer STILL zu
+             * 0 und die Zeile bekam eine neue - jeder virtuelle Eingang in
+             * Loxone, der auf die alte Nummer zeigte, sprach danach eine
+             * andere Leuchte an. Seit Entscheidung 19 eine Beanstandung. */
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_NR'), $gv_i + 1, $gv_znr);
+            $gv_bean[] = 'g_name#' . $gv_i;   // verstecktes Feld: die Markierung traegt der Name
+            continue;
         }
         $gv_zeile = array(
             'name'   => $gv_nm,
@@ -319,12 +377,15 @@ if ($gv_post && isset($_POST['speichern'])) {
                 || (int) $gv_w < $gv_gr[0] || (int) $gv_w > $gv_gr[1]) {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_ZEILENWERT'),
                     $gv_i + 1, gv_t('EINST.T_' . strtoupper($gv_f)), $gv_gr[0], $gv_gr[1]);
+                $gv_bean[] = 'g_' . $gv_f . '#' . $gv_i;
                 continue;
             }
             $gv_zeile[$gv_f] = (int) $gv_w;
         }
         if (isset($gv_zeile['kmin'], $gv_zeile['kmax']) && $gv_zeile['kmin'] >= $gv_zeile['kmax']) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_KELVIN_REIHE'), $gv_i + 1);
+            $gv_bean[] = 'g_kmin#' . $gv_i;
+            $gv_bean[] = 'g_kmax#' . $gv_i;
             continue;
         }
         $gv_neu[] = $gv_zeile;
@@ -354,34 +415,49 @@ if ($gv_post && isset($_POST['speichern'])) {
 
     /* Eigene Szenen. Geprueft wird mit derselben Funktion wie bei jeder von
      * aussen hereinkommenden Liste - 20 Byte je Paket und die richtige
-     * XOR-Pruefsumme. Was nicht besteht, wird gemeldet und NICHT gespeichert;
-     * die uebrigen Zeilen speichert derselbe Vorgang trotzdem. Eine halb
-     * ausgefuellte Zeile darf nicht das Speichern aller Felder verhindern. */
+     * XOR-Pruefsumme. Was nicht besteht, wird gemeldet, und dann wird GAR
+     * NICHTS gespeichert, auch nicht die uebrigen Zeilen und Felder
+     * (Entscheidung 16 vom 30.09.2026). Bis 0.9.24 sagte dieser Kommentar
+     * das Gegenteil; der Code speicherte schon damals nur ohne Beanstandung. */
     $gv_szenen_neu = array();
     $gv_schluessel_belegt = array();
     for ($gv_i = 0; $gv_i < 8; $gv_i++) {
         $gv_hol = function ($feld) use ($gv_i) {
             $a = isset($_POST[$feld]) ? (array) $_POST[$feld] : array();
-            return isset($a[$gv_i]) ? trim(preg_replace('/[\x00-\x1F\x7F"\']/', '', (string) $a[$gv_i])) : '';
+            return (isset($a[$gv_i]) && is_scalar($a[$gv_i])) ? trim((string) $a[$gv_i]) : '';
         };
         $gv_sname = $gv_hol('s_name');
         $gv_ssku = $gv_hol('s_sku');
         $gv_scmd = $gv_hol('s_cmd');
-        if ($gv_sname === '' && $gv_scmd === '') {
+        if ($gv_sname === '' && $gv_scmd === '' && $gv_ssku === '') {
             continue;   // leere Zeile
+        }
+        /* Wie bei den Geraeten: bisher still entfernt, jetzt beanstandet. */
+        $gv_zf = gv_zeichen_felder(array('s_name' => $gv_sname, 's_sku' => $gv_ssku, 's_cmd' => $gv_scmd));
+        if ($gv_zf) {
+            foreach (array_keys($gv_zf) as $gv_bf) {
+                $gv_bean[] = $gv_bf . '#' . $gv_i;     // X-2
+            }
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_ZEICHEN_SZENE'), $gv_i + 1,
+                implode(', ', array_map('gv_t', array_values($gv_zf))));
+            continue;
         }
         if ($gv_sname === '' || $gv_scmd === '') {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_UNVOLLSTAENDIG'), $gv_i + 1);
+            $gv_bean[] = 's_name#' . $gv_i;
+            $gv_bean[] = 's_cmd#' . $gv_i;
             continue;
         }
         $gv_sschl = preg_replace('/[^a-z0-9_]/', '', strtolower(str_replace(
             array(' ', '-', 'ä', 'ö', 'ü', 'ß'), array('_', '_', 'ae', 'oe', 'ue', 'ss'), $gv_sname)));
         if ($gv_sschl === '' || strlen($gv_sschl) > 33) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_NAME'), $gv_i + 1);
+            $gv_bean[] = 's_name#' . $gv_i;
             continue;
         }
         if (isset($gv_schluessel_belegt[$gv_sschl])) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_DOPPELT'), $gv_i + 1, $gv_sschl);
+            $gv_bean[] = 's_name#' . $gv_i;
             continue;
         }
         /* Denselben Titel wie eine eingebaute Szene derselben SKU gibt es
@@ -389,6 +465,8 @@ if ($gv_post && isset($_POST['speichern'])) {
          * benannte Bausteine (govee_agenten/oberflaeche, Befund 10). */
         if (gv_szene_titel_belegt($gv_sname, $gv_ssku)) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_TITEL'), $gv_i + 1, $gv_sname, $gv_ssku);
+            $gv_bean[] = 's_name#' . $gv_i;
+            $gv_bean[] = 's_sku#' . $gv_i;
             continue;
         }
         $gv_liste = array_values(array_filter(array_map('trim',
@@ -396,6 +474,7 @@ if ($gv_post && isset($_POST['speichern'])) {
         list($gv_geprueft, $gv_meldung) = gv_pt_pruefen($gv_liste);
         if ($gv_geprueft === null) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SZENE_CMD'), $gv_i + 1, $gv_meldung);
+            $gv_bean[] = 's_cmd#' . $gv_i;
             continue;
         }
         $gv_schluessel_belegt[$gv_sschl] = true;
@@ -408,12 +487,14 @@ if ($gv_post && isset($_POST['speichern'])) {
         $gv_wert = isset($_POST[$gv_feld]) ? trim((string) $_POST[$gv_feld]) : '';
         if (!preg_match('/^[0-9]+$/', $gv_wert)) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_ZAHL'), gv_t('EINST.L_' . strtoupper($gv_feld)));
+            $gv_bean[] = $gv_feld;
             continue;
         }
         $gv_zahl = (int) $gv_wert;
         if ($gv_zahl < $gv_grenzen[0] || $gv_zahl > $gv_grenzen[1]) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_BEREICH'),
                 gv_t('EINST.L_' . strtoupper($gv_feld)), $gv_grenzen[0], $gv_grenzen[1]);
+            $gv_bean[] = $gv_feld;
             continue;
         }
         $gv_cfg[$gv_feld] = $gv_zahl;
@@ -428,16 +509,19 @@ if ($gv_post && isset($_POST['speichern'])) {
      * Ein leeres Feld loescht nichts - sonst stuende irgendwann ein leerer
      * Schluessel dort, ohne dass es jemand merkt. Zum Loeschen gibt es einen
      * eigenen Haken. */
+    /* Geschrieben wird der Schluessel erst unten, zusammen mit der
+     * Konfiguration und nur ohne Beanstandung (Entscheidung 16). Bis 0.9.24
+     * stand das Schreiben HIER, vor der Pruefung der uebrigen Felder: ein
+     * neuer Schluessel plus ein Tippfehler im Takt tauschte den Schluessel
+     * und liess die Konfiguration stehen (Bestandsmessung B, 01.10.2026). */
     $gv_geheim = gv_geheim();
-    $gv_key = isset($_POST['cloud_key']) ? trim((string) $_POST['cloud_key']) : '';
-    if (isset($_POST['cloud_key_loeschen'])) {
+    $gv_geheim_alt = $gv_geheim;
+    $gv_geheim_neu = null;        // null = geheim.json bleibt unberuehrt
+    $gv_key = isset($_POST['cloud_key']) && is_scalar($_POST['cloud_key']) ? trim((string) $_POST['cloud_key']) : '';
+    $gv_key_loeschen = isset($_POST['cloud_key_loeschen']);
+    if ($gv_key_loeschen) {
         $gv_geheim['cloud_key'] = '';
-        /* Rueckgabewert pruefen (U11): "geloescht" nur, wenn geschrieben. */
-        if (gv_geheim_speichern($gv_geheim)) {
-            $gv_meldungen[] = gv_t('EINST.KEY_GELOESCHT');
-        } else {
-            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
-        }
+        $gv_geheim_neu = $gv_geheim;
     } elseif ($gv_key !== '') {
         /* Die FORM eines Geheimnisses darf beurteilt werden, sein Wert nie
          * angezeigt. Der Govee-Schluessel ist eine GUID mit 36 Zeichen -
@@ -445,19 +529,41 @@ if ($gv_post && isset($_POST['speichern'])) {
          * Anbieters statt in eine verstaendliche hier. */
         if (!preg_match(gv_regeln()['cloud_key'], $gv_key)) {
             $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_KEY'), strlen($gv_key));
+            $gv_bean[] = 'cloud_key';
         } else {
             $gv_geheim['cloud_key'] = $gv_key;
-            if (!gv_geheim_speichern($gv_geheim)) {
-                $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
-            }
+            $gv_geheim_neu = $gv_geheim;
         }
     }
 
-    if (!$gv_fehler) {
-        if (gv_config_speichern($gv_cfg)) {
-            $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
-        } else {
-            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
+    /* Bei einer Beanstandung wird NICHTS gespeichert - weder govee.json
+     * noch geheim.json (Entscheidung 16 vom 30.09.2026, Regeln/04). Die
+     * eingetippten Werte kommen mit der Einmalmeldung zurueck (X-2); ein neu
+     * eingetippter Schluessel nie. Erst der Schluessel, dann die
+     * Konfiguration; scheitert die Konfiguration, wird der alte Schluessel
+     * zurueckgeschrieben - "nichts gespeichert" soll auch dann stimmen. */
+    if (count($gv_fehler) > $gv_n0) {
+        $gv_fehler[] = gv_t('EINST.NICHTS_GESPEICHERT');
+        /* Ein neu eingetippter Schluessel und der Loesch-Haken reisen nie
+         * zurueck (X-2): genannt und markiert, damit niemand glaubt, sie
+         * seien wirksam geworden. */
+        if (($gv_key !== '' && !in_array('cloud_key', $gv_bean, true)) || $gv_key_loeschen) {
+            $gv_fehler[] = gv_t('EINST.EINGABEN_KEY');
+            $gv_bean[] = 'cloud_key';
+        }
+        $gv_eingaben = gv_eingaben_sammeln('settings', $gv_bean);   // X-2
+    } elseif ($gv_geheim_neu !== null && !gv_geheim_speichern($gv_geheim_neu)) {
+        /* Rueckgabewert pruefen (U11): nichts als geschrieben melden. */
+        $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
+    } elseif (gv_config_speichern($gv_cfg)) {
+        if ($gv_key_loeschen) {
+            $gv_meldungen[] = gv_t('EINST.KEY_GELOESCHT');
+        }
+        $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
+    } else {
+        $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
+        if ($gv_geheim_neu !== null && !gv_geheim_speichern($gv_geheim_alt)) {
+            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
         }
     }
     $gv_tab = 'tab-settings';
@@ -478,21 +584,34 @@ if ($gv_post && isset($_POST['speichern'])) {
  * ruehrt ausschliesslich die MQTT-Werte an. */
 if ($gv_post && isset($_POST['save_mqtt'])) {
     $gv_mcfg = gv_config();
+    $gv_n0 = count($gv_fehler);   // Entscheidung 16 (MQTT)
+    $gv_bean = array();           // X-2: beanstandete Felder
     $gv_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
-    $gv_mtopic = trim(preg_replace('/[\x00-\x1F\x7F"\']/', '',
-        (string) (isset($_POST['mqtt_topic']) ? $_POST['mqtt_topic'] : '')));
+    /* Nicht mehr still saeubern (Entscheidung 16): bis 0.9.24 wurden
+     * Anfuehrungs- und Steuerzeichen entfernt, "go'vee" wurde "govee".
+     * Jetzt weist das Muster sie ab. */
+    $gv_mtopic = trim((isset($_POST['mqtt_topic']) && is_scalar($_POST['mqtt_topic']))
+        ? (string) $_POST['mqtt_topic'] : '');
     if ($gv_mtopic === '' || !preg_match(gv_regeln()['topic'], $gv_mtopic)) {
         $gv_fehler[] = gv_t('EINST.FEHLER_TOPIC');
+        $gv_bean[] = 'mqtt_topic';
+    } elseif (trim($gv_mtopic, '/') !== $gv_mtopic) {
+        /* Bis 0.9.24 still abgeschnitten ("govee/" wurde "govee");
+         * Entscheidung 19: beanstanden. Das Zurueckspielen weist dasselbe
+         * schon ab (gv_sicherung_wert_pruefen, mqtt_topic). */
+        $gv_fehler[] = gv_t('EINST.FEHLER_TOPIC_RAND');
+        $gv_bean[] = 'mqtt_topic';
     } else {
-        $gv_mcfg['mqtt_topic'] = trim($gv_mtopic, '/');
+        $gv_mcfg['mqtt_topic'] = $gv_mtopic;
     }
-    if (!$gv_fehler) {
-        if (gv_config_speichern($gv_mcfg)) {
-            $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
-        } else {
-            /* Bis 0.9.22 ohne Zweig fuer den Fehlschlag (U11). */
-            $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
-        }
+    if (count($gv_fehler) > $gv_n0) {
+        $gv_fehler[] = gv_t('EINST.NICHTS_GESPEICHERT');
+        $gv_eingaben = gv_eingaben_sammeln('mqtt', $gv_bean);   // X-2
+    } elseif (gv_config_speichern($gv_mcfg)) {
+        $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
+    } else {
+        /* Bis 0.9.22 ohne Zweig fuer den Fehlschlag (U11). */
+        $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
     }
     $gv_tab = 'tab-mqtt';
 }
@@ -672,7 +791,10 @@ if ($gv_post && isset($_POST['selbsttest'])) {
  * exit hinaus. Scheitert das Schreiben der Einmalmeldung, wird wie bisher
  * direkt gerendert - so geht keine Meldung verloren. Bauform AnkerSolix
  * 0.9.21. */
-if ($gv_post_roh && gv_einmal_schreiben($gv_meldungen, $gv_fehler, $gv_testausgabe)) {
+if ($gv_eingaben) {
+    gv_eingaben_setzen($gv_eingaben);   // falls die Einmalmeldung scheitert und direkt gezeigt wird
+}
+if ($gv_post_roh && gv_einmal_schreiben($gv_meldungen, $gv_fehler, $gv_testausgabe, $gv_hinweise, $gv_eingaben)) {
     header('Location: index.php?form=' . rawurlencode(substr($gv_tab, 4)), true, 303);
     exit;
 }
@@ -777,6 +899,8 @@ if ($gv_rahmen) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+/* Eigene Zutat (X-2, 01.10.2026): das beanstandete Feld nach der Rueckreise der Eingaben. */
+.sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-an  { color: #1a7f1a; font-weight: 700; }
 .sm-aus { color: #b00000; font-weight: 700; }
 /* Ein Auswahlfeld muss man als Auswahlfeld erkennen. Nachgezogen am
@@ -807,6 +931,9 @@ if ($gv_rahmen) {
 <?php } ?>
 <?php if ($gv_fehler) { ?>
 <div class="sm-warnung"><b><?= gv_e(gv_t('ALLG.BEANSTANDUNG')) ?></b><br><?= implode('<br>', array_map('gv_e', $gv_fehler)) ?></div>
+<?php } ?>
+<?php if ($gv_hinweise) { ?>
+<div class="sm-warnung"><?= implode('<br>', array_map('gv_e', $gv_hinweise)) ?></div>
 <?php } ?>
 
 <div class="sm-kacheln">
@@ -952,6 +1079,10 @@ if ($gv_rahmen) {
 <p class="sm-hilfe"><?= gv_t('EINST.SUCHE_LEER') ?></p>
 <?php } ?>
 
+<?php /* X-2: nach einer Beanstandung zeigt NUR dieses Formular die
+         eingetippten Werte; nach </form> gilt wieder der gespeicherte Stand. */
+$gv_cfg_gespeichert = $gv_cfg;
+$gv_cfg = gv_eingaben_ueberlagern($gv_cfg, 'settings'); ?>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="speichern" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
@@ -975,23 +1106,25 @@ if ($gv_rahmen) {
 $gv_roh = isset($gv_cfg['geraete']) && is_array($gv_cfg['geraete']) ? $gv_cfg['geraete'] : array();
 for ($gv_i = 0; $gv_i < 8; $gv_i++) {
     $gv_z = isset($gv_roh[$gv_i]) && is_array($gv_roh[$gv_i]) ? $gv_roh[$gv_i] : array();
-    $gv_v = function ($k) use ($gv_z) { return isset($gv_z[$k]) ? (string) $gv_z[$k] : ''; };
+    $gv_v = function ($k) use ($gv_z, $gv_i) {
+        return gv_eingabe_zeile('g_' . $k, $gv_i, isset($gv_z[$k]) ? (string) $gv_z[$k] : '');
+    };
 ?>
 <tr>
 <td><?= $gv_i + 1 ?></td>
 <td><input data-role="none" type="hidden" name="g_nr[]" value="<?= gv_e($gv_v('nr')) ?>"><?= $gv_v('nr') !== '' ? (int) $gv_v('nr') : '&ndash;' ?></td>
-<td><input data-role="none" type="text" name="g_name[]" value="<?= gv_e($gv_v('name')) ?>" size="14"></td>
-<td><select data-role="none" name="g_art[]">
+<td><input data-role="none" type="text" name="g_name[]"<?= gv_markierung('g_name#' . $gv_i) ?> value="<?= gv_e($gv_v('name')) ?>" size="14"></td>
+<td><select data-role="none" name="g_art[]"<?= gv_markierung('g_art#' . $gv_i) ?>>
     <option value="lan"<?= $gv_v('art') !== 'cloud' ? ' selected' : '' ?>>LAN</option>
     <option value="cloud"<?= $gv_v('art') === 'cloud' ? ' selected' : '' ?>>Cloud</option>
 </select></td>
-<td><input data-role="none" type="text" name="g_ip[]" value="<?= gv_e($gv_v('ip')) ?>" size="14" placeholder="<?= $gv_i === 0 ? '192.168.1.50' : '' ?>"></td>
-<td><input data-role="none" type="text" name="g_sku[]" value="<?= gv_e($gv_v('sku')) ?>" size="7" placeholder="<?= $gv_i === 0 ? 'H61A8' : '' ?>"></td>
-<td><input data-role="none" type="text" name="g_device[]" value="<?= gv_e($gv_v('device')) ?>" size="18"></td>
-<td><input data-role="none" type="text" name="g_pixel[]" value="<?= gv_e($gv_v('pixel')) ?>" size="3"></td>
-<td><input data-role="none" type="text" name="g_kmin[]" value="<?= gv_e($gv_v('kmin')) ?>" size="4" placeholder="2700"></td>
-<td><input data-role="none" type="text" name="g_kmax[]" value="<?= gv_e($gv_v('kmax')) ?>" size="4" placeholder="6500"></td>
-<td><select data-role="none" name="g_pt[]">
+<td><input data-role="none" type="text" name="g_ip[]"<?= gv_markierung('g_ip#' . $gv_i) ?> value="<?= gv_e($gv_v('ip')) ?>" size="14" placeholder="<?= $gv_i === 0 ? '192.168.1.50' : '' ?>"></td>
+<td><input data-role="none" type="text" name="g_sku[]"<?= gv_markierung('g_sku#' . $gv_i) ?> value="<?= gv_e($gv_v('sku')) ?>" size="7" placeholder="<?= $gv_i === 0 ? 'H61A8' : '' ?>"></td>
+<td><input data-role="none" type="text" name="g_device[]"<?= gv_markierung('g_device#' . $gv_i) ?> value="<?= gv_e($gv_v('device')) ?>" size="18"></td>
+<td><input data-role="none" type="text" name="g_pixel[]"<?= gv_markierung('g_pixel#' . $gv_i) ?> value="<?= gv_e($gv_v('pixel')) ?>" size="3"></td>
+<td><input data-role="none" type="text" name="g_kmin[]"<?= gv_markierung('g_kmin#' . $gv_i) ?> value="<?= gv_e($gv_v('kmin')) ?>" size="4" placeholder="2700"></td>
+<td><input data-role="none" type="text" name="g_kmax[]"<?= gv_markierung('g_kmax#' . $gv_i) ?> value="<?= gv_e($gv_v('kmax')) ?>" size="4" placeholder="6500"></td>
+<td><select data-role="none" name="g_pt[]"<?= gv_markierung('g_pt#' . $gv_i) ?>>
     <option value="0"<?= $gv_v('pt') !== '1' ? ' selected' : '' ?>><?= gv_e(gv_t('EINST.O_PT_STANDARD')) ?></option>
     <option value="1"<?= $gv_v('pt') === '1' ? ' selected' : '' ?>><?= gv_e(gv_t('EINST.O_PT_PTREAL')) ?></option>
 </select></td>
@@ -1013,14 +1146,18 @@ $gv_sroh = isset($gv_cfg['szenen']) && is_array($gv_cfg['szenen']) ? $gv_cfg['sz
 for ($gv_i = 0; $gv_i < 8; $gv_i++) {
     $gv_sz = isset($gv_sroh[$gv_i]) && is_array($gv_sroh[$gv_i]) ? $gv_sroh[$gv_i] : array();
     $gv_scmds = isset($gv_sz['cmd']) && is_array($gv_sz['cmd']) ? implode(',', $gv_sz['cmd']) : '';
+    /* X-2: nach einer Beanstandung die eingetippten Werte der Zeile. */
+    $gv_sz_name = gv_eingabe_zeile('s_name', $gv_i, isset($gv_sz['name']) ? (string) $gv_sz['name'] : '');
+    $gv_sz_sku = gv_eingabe_zeile('s_sku', $gv_i, isset($gv_sz['sku']) ? (string) $gv_sz['sku'] : '');
+    $gv_scmds = gv_eingabe_zeile('s_cmd', $gv_i, $gv_scmds);
 ?>
 <tr>
 <td><?= $gv_i + 1 ?></td>
-<td><input data-role="none" type="text" name="s_name[]" size="16"
-    value="<?= gv_e(isset($gv_sz['name']) ? $gv_sz['name'] : '') ?>"></td>
-<td><input data-role="none" type="text" name="s_sku[]" size="7"
-    value="<?= gv_e(isset($gv_sz['sku']) ? $gv_sz['sku'] : '') ?>"></td>
-<td><input data-role="none" type="text" name="s_cmd[]" style="width:100%;"
+<td><input data-role="none" type="text" name="s_name[]"<?= gv_markierung('s_name#' . $gv_i) ?> size="16"
+    value="<?= gv_e($gv_sz_name) ?>"></td>
+<td><input data-role="none" type="text" name="s_sku[]"<?= gv_markierung('s_sku#' . $gv_i) ?> size="7"
+    value="<?= gv_e($gv_sz_sku) ?>"></td>
+<td><input data-role="none" type="text" name="s_cmd[]"<?= gv_markierung('s_cmd#' . $gv_i) ?> style="width:100%;"
     value="<?= gv_e($gv_scmds) ?>"></td>
 </tr>
 <?php } ?>
@@ -1031,17 +1168,17 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 <h2><?= gv_e(gv_t('EINST.H_TAKT')) ?></h2>
 <div class="sm-feld">
   <label for="intervall"><?= gv_e(gv_t('EINST.L_INTERVALL')) ?></label>
-  <input data-role="none" type="number" id="intervall" name="intervall" value="<?= gv_e($gv_cfg['intervall']) ?>" min="5" max="3600">
+  <input data-role="none" type="number" id="intervall" name="intervall"<?= gv_markierung('intervall') ?> value="<?= gv_e($gv_cfg['intervall']) ?>" min="5" max="3600">
   <div class="sm-hilfe"><?= gv_t('EINST.H_INTERVALL') ?></div>
 </div>
 <div class="sm-feld">
   <label for="suchtakt"><?= gv_e(gv_t('EINST.L_SUCHTAKT')) ?></label>
-  <input data-role="none" type="number" id="suchtakt" name="suchtakt" value="<?= gv_e($gv_cfg['suchtakt']) ?>" min="0" max="1440">
+  <input data-role="none" type="number" id="suchtakt" name="suchtakt"<?= gv_markierung('suchtakt') ?> value="<?= gv_e($gv_cfg['suchtakt']) ?>" min="0" max="1440">
   <div class="sm-hilfe"><?= gv_t('EINST.H_SUCHTAKT') ?></div>
 </div>
 <div class="sm-feld">
   <label for="wartezeit"><?= gv_e(gv_t('EINST.L_WARTEZEIT')) ?></label>
-  <input data-role="none" type="number" id="wartezeit" name="wartezeit" value="<?= gv_e($gv_cfg['wartezeit']) ?>" min="0" max="10">
+  <input data-role="none" type="number" id="wartezeit" name="wartezeit"<?= gv_markierung('wartezeit') ?> value="<?= gv_e($gv_cfg['wartezeit']) ?>" min="0" max="10">
   <div class="sm-hilfe"><?= gv_t('EINST.H_WARTEZEIT') ?></div>
 </div>
 
@@ -1068,7 +1205,7 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
 </div>
 <div class="sm-feld">
   <label for="cloud_key"><?= gv_e(gv_t('EINST.L_KEY')) ?></label>
-  <input data-role="none" type="password" id="cloud_key" name="cloud_key" value="" autocomplete="new-password"
+  <input data-role="none" type="password" id="cloud_key" name="cloud_key"<?= gv_markierung('cloud_key') ?> value="" autocomplete="new-password"
          placeholder="<?= trim((string) $gv_geheim['cloud_key']) !== ''
              ? gv_e(sprintf(gv_t('EINST.KEY_HINTERLEGT'), strlen(trim((string) $gv_geheim['cloud_key']))))
              : gv_e(gv_t('EINST.KEY_LEER')) ?>">
@@ -1095,7 +1232,7 @@ if ($gv_cliste) { ?>
 
 <div class="sm-feld">
   <label for="cloud_takt"><?= gv_e(gv_t('EINST.L_CLOUD_TAKT')) ?></label>
-  <input data-role="none" type="number" id="cloud_takt" name="cloud_takt" value="<?= gv_e($gv_cfg['cloud_takt']) ?>" min="1" max="1440">
+  <input data-role="none" type="number" id="cloud_takt" name="cloud_takt"<?= gv_markierung('cloud_takt') ?> value="<?= gv_e($gv_cfg['cloud_takt']) ?>" min="1" max="1440">
   <div class="sm-hilfe"><?= gv_t('EINST.H_CLOUD_TAKT') ?></div>
 </div>
 
@@ -1106,6 +1243,7 @@ if ($gv_cliste) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= gv_e(gv_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php $gv_cfg = $gv_cfg_gespeichert; ?>
 
 <h2><?= gv_e(gv_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= gv_t('EINST.SICHERUNG_ERKLAERUNG') ?></div>
@@ -1119,6 +1257,12 @@ if ($gv_cliste) { ?>
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="sicherung_holen" value="1"><?= gv_e(gv_t('EINST.K_SICHERUNG')) ?></button>
   </form>
 </div>
+<?php /* X-3: gespeicherte Werte, die das eigene Zurueckspielen abweisen wuerde -
+         dieselbe Pruefung wie beim Zurueckspielen, nur Namen, nie Werte. */
+$gv_x3 = gv_rueckspiel_befund();
+if ($gv_x3) { ?>
+<div class="sm-warnung"><?= sprintf(gv_e(gv_t('EINST.SICH_X3_WARNUNG')), '<span class="sm-mono">' . gv_e(implode(', ', $gv_x3)) . '</span>') ?></div>
+<?php } ?>
 <div class="sm-warnung"><?= gv_t('EINST.SICH_WARNUNG') ?></div>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
@@ -1152,6 +1296,9 @@ if ($gv_cliste) { ?>
 <div class="sm-seite<?= $gv_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
 
 <h2>MQTT</h2>
+<?php /* X-2: wie beim Formular Einstellungen, nur bis </form>. */
+$gv_cfg_gespeichert = $gv_cfg;
+$gv_cfg = gv_eingaben_ueberlagern($gv_cfg, 'mqtt'); ?>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="save_mqtt" value="1">
 <input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
@@ -1162,7 +1309,7 @@ if ($gv_cliste) { ?>
 </div>
 <div class="sm-feld">
   <label for="mqtt_topic"><?= gv_e(gv_t('EINST.L_TOPIC')) ?></label>
-  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic" value="<?= gv_e($gv_cfg['mqtt_topic']) ?>">
+  <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic"<?= gv_markierung('mqtt_topic') ?> value="<?= gv_e($gv_cfg['mqtt_topic']) ?>">
   <div class="sm-hilfe"><?= gv_t('EINST.H_TOPIC') ?></div>
 </div>
 <div class="sm-legende"><span><i class="sm-punkt sm-b-aktion"></i> <?= gv_t('LEGENDE.AKTION') ?></span></div>
@@ -1170,6 +1317,7 @@ if ($gv_cliste) { ?>
   <button data-role="none" class="sm-btn sm-b-aktion" type="submit"><?= gv_e(gv_t('ALLG.SPEICHERN')) ?></button>
 </div>
 </form>
+<?php $gv_cfg = $gv_cfg_gespeichert; ?>
 <h2><?= gv_e(gv_t('MQTT.H_ZUSTAND')) ?></h2>
 <p class="sm-hilfe"><?= gv_t('MQTT.ERKLAERUNG') ?></p>
 <table class="sm-tbl">

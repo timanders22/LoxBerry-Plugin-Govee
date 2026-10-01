@@ -27,6 +27,11 @@
  *            [&bewegung=<Zahl>] [&geschw=0..100]
  *   musik    &art=<Zahl> [&sens=0..100] [&gruppe=15|12|1|19]
  *   pt       &cmd=<base64>[,<base64>...]      nur wenn ausdruecklich erlaubt
+ *
+ * Befehlsbremse (X-7, seit dem Verbesserungsbau 01.10.2026): ein, aus, hell,
+ * kelvin und farbe mit DEMSELBEN Wert an dieselbe Leuchte innerhalb von 60 s
+ * gehen nicht erneut hinaus - Antwort SET;OK=1;AKTION=..;UNVERAENDERT=1.
+ * Szene, Balken, Segment, Musik und pt sind Ereignisse und immer frei.
  *   abruf                 sofort abfragen statt auf den Takt zu warten
  *   suche                 Geraetesuche im Netz anstossen
  *
@@ -50,7 +55,7 @@ $gv_cfg = gv_config(false);
 /* ---------------- Token ---------------- */
 $gv_soll_roh = $gv_cfg['aktionstoken'];
 $gv_soll = is_string($gv_soll_roh) ? $gv_soll_roh : '';
-$gv_ist = isset($_GET['token']) ? (string) $_GET['token'] : '';
+$gv_ist = (isset($_GET['token']) && is_string($_GET['token'])) ? $_GET['token'] : '';
 /* Der Selbsttest (C8, Regeln/07 "Der Endpunkt-Selbsttest"): prueft nur das
  * Token, schaltet nichts, schreibt nichts. Drei Antworten:
  *   richtiges Token        HTTP 200 SELFTEST;OK=1;TOKEN=OK
@@ -357,9 +362,38 @@ if (!gv_dienst_laeuft()) {
     exit;
 }
 
+/* ---------------- Befehlsbremse (X-7, Entscheidung 19) ----------------
+ *
+ * Derselbe Sollwert an dieselbe Leuchte innerhalb von 60 s geht nicht erneut
+ * hinaus (UNVERAENDERT=1), kein 429. Sie steht HINTER der Frage nach dem
+ * Dienst: laeuft er nicht, bleibt es bei 503 - ein "unveraendert" wuerde den
+ * Ausfall verdecken. Laesst sich der Merker nicht oeffnen, faellt sie
+ * geschlossen aus (503). Die Ziele kommen aus der ungeheilten Konfiguration
+ * dieses Endpunkts. Vorbild EVCC 0.9.37. */
+$gv_bremse = gv_bremse_pruefen($gv_befehl, $gv_cfg);
+if ($gv_bremse['stand'] === 'merker') {
+    gv_log_gebremst('bremse_merker', 'Die Merkerdatei der Befehlsbremse unter '
+        . gv_paths()['datadir'] . ' laesst sich nicht oeffnen - ein, aus, hell, kelvin und farbe '
+        . 'werden mit 503 abgewiesen, bis das behoben ist. Pruefen: Platz und Eigentuemer (loxberry).');
+    http_response_code(503);
+    echo 'SET;OK=0;AKTION=' . $gv_aktion . ";GRUND=BREMSE_MERKER\n";
+    exit;
+}
+if ($gv_bremse['stand'] === 'gleich') {
+    printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;MELDUNG=Derselbe Wert ging vor %d s hinaus - nicht erneut gesendet.\n",
+        $gv_aktion, (int) $gv_bremse['seit']);
+    exit;
+}
+
 list($gv_erg, $gv_meldung) = gv_befehl_absetzen($gv_befehl);
 if ($gv_erg === 0) {
     http_response_code(500);
+}
+/* Gemerkt wird nur, was der Dienst bestaetigt hat (1). Scheitert das
+ * Schreiben, wirkt der Befehl trotzdem - aber das steht im Protokoll. */
+if ($gv_erg === 1 && !gv_bremse_merken($gv_befehl, $gv_cfg)) {
+    gv_log_gebremst('bremse_schreiben', 'Die Merkerdatei der Befehlsbremse liess sich nicht schreiben - '
+        . 'die Bremse erkennt den letzten Befehl nicht.');
 }
 printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $gv_erg, $gv_aktion,
     str_replace(array("\r", "\n", ';'), ' ', $gv_meldung));

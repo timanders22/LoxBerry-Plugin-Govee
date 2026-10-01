@@ -204,6 +204,11 @@ if gv_ist_upgrade; then
     gv_zurueck "$CF" "$BK" config "govee.json"
     gv_zurueck "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" geheim "geheim.json"
 else
+    # Seit dem Verbesserungsbau 01.10.2026 (X-1) legt schon preinstall.sh die
+    # Zweitschriften beiseite - VOR dem Kopieren von Cron-Datei und
+    # Oberflaeche, damit kein Endpunktabruf die neue govee.json aus ihnen
+    # heilt. Dieser Zweig bleibt als Rueckfall; er findet dann nichts mehr
+    # und schweigt, die <WARNING> steht also genau einmal im Protokoll.
     GV_BEISEITE=""
     for gv_bk in "$BK" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.govee.json" \
                  "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json"; do
