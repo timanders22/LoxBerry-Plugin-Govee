@@ -294,8 +294,15 @@ if ($gv_post && isset($_POST['speichern'])) {
             // IPv4 oder Hostname zulassen - beides ist gebraeuchlich.
             /* Die Muster stehen in gv_regeln() - dieselben prueft das
              * Zurueckspielen einer Sicherung (U4). */
-            if (!preg_match(gv_regeln()['ip4'], $gv_ip)
-                && !preg_match(gv_regeln()['host'], $gv_ip)) {
+            /* K1 (02.10.2026): vier Zifferngruppen mit einer Gruppe ueber 255
+             * sind eine falsch getippte IPv4-Adresse, kein Rechnername. */
+            $gv_ab = gv_adresse_befund($gv_ip);
+            if ($gv_ab === 'bereich') {
+                $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_IP_BEREICH'), $gv_i + 1, $gv_ip);
+                $gv_bean[] = 'g_ip#' . $gv_i;
+                continue;
+            }
+            if ($gv_ab !== '') {
                 $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_IP'), $gv_i + 1);
                 $gv_bean[] = 'g_ip#' . $gv_i;
                 continue;

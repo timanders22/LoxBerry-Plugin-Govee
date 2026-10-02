@@ -3,9 +3,31 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.24 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.25 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.25
+
+Falsch getippte IP-Adresse wird beanstandet (Verbesserungsliste Govee-k1, Nr. 16/19).
+Gemessen an einer eigenen Attrappe über `php -S`
+(PHP 7.4 und 8.5, Wurzel wie installiert); nicht am Gerät, nicht an einer Leuchte.
+
+* **Falsch getippte IP-Adresse wird beanstandet.** Eine Adresse aus vier Zahlen mit Punkten, von denen eine über 255
+  liegt (z. B. `192.168.1.300`), galt bisher als Rechnername und wurde gespeichert. Die Leuchte war danach nie
+  erreichbar, ohne dass es jemand sagte. Jetzt wird nichts gespeichert, das Feld ist rot umrandet, die Eingabe steht
+  wieder im Formular, und die Meldung lautet „Zeile 1: 192.168.1.300 sieht aus wie eine IPv4-Adresse, aber jede der
+  vier Zahlen darf höchstens 255 sein.“
+* **Dieselbe Prüfung beim Zurückspielen.** Eine Sicherung mit so einer Adresse wird abgewiesen; es ändert sich nichts.
+* **Sichern warnt.** Steht so eine Adresse aus einer älteren Fassung schon in den Einstellungen, warnt der Reiter
+  Einstellungen gelb am Knopf „Einstellungen sichern“, und die Sicherung trägt `_warnung` im Kopf (nur der
+  Schlüsselname `geraete`, keine Adresse). Geliefert wird sie trotzdem.
+* Unverändert gespeichert werden gültige Adressen (auch `255.255.255.255`) und Rechnernamen wie
+  `stehlampe.fritz.box`; für einen Namen bleibt der bisherige Hinweis „Name statt fester IP“.
+* Der Dienst behandelt eine schon gespeicherte falsche Adresse wie bisher (nicht erreichbar); erst ein Speichern
+  verlangt die Berichtigung.
+
+**In Loxone:** Nichts zu ändern; Adressen und Befehle bleiben gleich.
 
 ## Neu in 0.9.24
 

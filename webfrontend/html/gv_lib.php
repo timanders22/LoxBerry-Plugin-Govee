@@ -3691,6 +3691,32 @@ function gv_regeln()
 }
 
 /**
+ * Ist $a als Adresse einer Leuchte zulaessig? (K1, 02.10.2026)
+ *
+ * Eine Eingabe aus vier Zifferngruppen mit Punkten IST als IPv4-Adresse
+ * gemeint. Traegt eine Gruppe mehr als 255, passte sie bis 0.9.24 trotzdem
+ * auf das Muster fuer Rechnernamen und wurde gespeichert (192.168.1.300) -
+ * die Leuchte war dann nie erreichbar, ohne dass jemand es sagte. Formular
+ * und Zurueckspielen pruefen mit dieser einen Funktion.
+ * Rueckgabe: '' gueltig, 'bereich' (IPv4-Form, eine Gruppe ueber 255),
+ * 'muster' (weder IPv4 noch Rechnername).
+ */
+function gv_adresse_befund($a)
+{
+    $a = (string) $a;
+    $r = gv_regeln();
+    if (preg_match($r['ip4'], $a)) {
+        foreach (explode('.', trim($a)) as $gruppe) {
+            if ((int) $gruppe > 255) {
+                return 'bereich';
+            }
+        }
+        return '';
+    }
+    return preg_match($r['host'], $a) ? '' : 'muster';
+}
+
+/**
  * Welche Formularfelder tragen Zeichen, die das Formular bis 0.9.24 still
  * entfernte (Steuerzeichen, gerade Anfuehrungszeichen)? Rueckgabe:
  * Feld => Sprachschluessel der Spaltenueberschrift. Seit Entscheidung 16
@@ -3817,7 +3843,9 @@ function gv_sicherung_geraete_pruefen($w)
         } elseif ($art === 'lan') {
             if ($ip === '') {
                 $m[] = sprintf(gv_t('EINST.FEHLER_IP_FEHLT'), $zeile);
-            } elseif (!preg_match($r['ip4'], $ip) && !preg_match($r['host'], $ip)) {
+            } elseif (gv_adresse_befund($ip) === 'bereich') {
+                $m[] = sprintf(gv_t('EINST.FEHLER_IP_BEREICH'), $zeile, $ip);
+            } elseif (gv_adresse_befund($ip) !== '') {
                 $m[] = sprintf(gv_t('EINST.FEHLER_IP'), $zeile);
             }
         } else {
