@@ -1033,6 +1033,7 @@ if ($gv_rahmen) {
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $gv_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= gv_t('EINST.WAS_IST_DAS') ?></div>
 
 <h2><?= gv_e(gv_t('EINST.H_DIENST')) ?></h2>
 <p class="sm-hilfe"><?= gv_t('EINST.DIENST_ERKLAERUNG') ?></p>
