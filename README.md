@@ -3,9 +3,23 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.28 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.29 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.29
+
+Pflege: Helligkeit auf der Musterseite „Govee Licht“ nach einer Messung an der Leuchte; Sammelvorlage ohne Datum.
+Kein Neuimport nötig.
+
+* **Begrenzer „Helligkeit 0 bis 100 (Govee)“** (Reiter „Einbindung in Loxone“, Seite „Govee Licht“, Nr. 4 und 5): Min 0
+  statt Min 1. Am 18.10.2026 an einer H61A8 gemessen: Helligkeit 1 schaltet die ausgeschaltete Leuchte wieder ein,
+  Helligkeit 0 lässt sie aus. Mit Min 1 konnte die Leuchte nach dem Ausschalten über den Dimmer also wieder angehen.
+  **Wer die Seite schon nachgebaut hat:** am Begrenzer Min auf 0 stellen (und den Namen auf
+  „Helligkeit 0 bis 100 (Govee)“, wenn er wie in der Tabelle heißen soll). Die Vorlagen bleiben, wie sie sind.
+* **Sammelvorlage** (`VI_GOVEE_alle.xml`, alle Leuchten in einem Abruf): Der Kommentar trägt kein Erzeugungsdatum
+  mehr, wie die Zustandsvorlage je Gerät seit 0.9.28. Titel, Befehle, Suchtexte und Grenzen sind unverändert.
+* Dienst, Endpunkt und übrige Vorlagen unverändert.
 
 ## Neu in 0.9.28
 
@@ -709,10 +723,12 @@ gibt es eines, und die Adressen zeigen ausschließlich dorthin.
   `cloud_takt`. Meldet die Schnittstelle HTTP 429, wird `Retry-After` gelesen
   und bis dahin nicht mehr abgerufen — ein übersprungener Lauf ist dabei kein
   Fehler und rührt den Zustand nicht an.
-* Die Vorlage *Grundbefehle* schickt Helligkeit unmittelbar an die Leuchte.
-  Eine 0 aus Loxones Lichtsteuerung ergibt dort die kleinste Stufe statt
-  Dunkelheit; dafür bleibt der Begrenzer nötig. Über die Vorlage *Stufenlos
-  über den LoxBerry* nimmt das Plugin die 0 entgegen und schaltet aus.
+* Die Vorlage *Grundbefehle* schickt Helligkeit unmittelbar an die Leuchte;
+  das Plugin sieht den Wert nicht. Am 18.10.2026 an einer H61A8 gemessen:
+  Helligkeit 1 schaltet die ausgeschaltete Leuchte wieder ein, Helligkeit 0
+  lässt sie aus – einen Begrenzer davor deshalb auf Min 0 stellen, nicht auf 1.
+  Über die Vorlage *Stufenlos über den LoxBerry* nimmt das Plugin die 0
+  entgegen und schaltet aus.
 
 ## Fassung 0.9.11 — der Stat-Zwischenspeicher
 Die Protokollkappung (512 000 Byte) stand in

@@ -3581,7 +3581,8 @@ function gv_vorlage_eingang_alle()
             'title'   => 'GOVEE ' . gv_titel('GV_XML.ZUSTAND_ALLE'),
             'address' => $adresse,
             'polling' => '60',
-            'comment' => sprintf(gv_klartext('GV_XML.KOPF_ALLE'), count($geraete), date('d.m.Y')),
+            // Seit 0.9.29 ohne Erzeugungsdatum, wie die Zustandsvorlage je Geraet (Pflegewelle 22).
+            'comment' => sprintf(gv_klartext('GV_XML.KOPF_ALLE'), count($geraete)),
         ), $cmds),
     );
 }
