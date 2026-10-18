@@ -3,9 +3,45 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.26 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.27 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.27
+
+Einbindung in Loxone in Vollausstattung: drei Seiten aus dem gemeinsamen Musterprojekt mit Bildern und
+Schritt-für-Schritt-Anleitung; neues Lebenszeichen `ZAEHLER`; Vorlagentitel fest deutsch.
+
+* **Reiter „Einbindung in Loxone“, Schritt 6:** Statt der bisherigen Liste mit 8 Zeilen stehen dort die drei
+  Seiten des [LoxBerry-Plugins Musterprojekts](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt), je mit
+  Kasten „So übernehmen Sie diese Seite“, Tabelle, Hinweisen und Bild: „Govee“ (18 Zeilen: alle Werte der
+  Zustandsvorlage, Ausfall über `OK` und das neue Lebenszeichen `ZAEHLER` mit einer Analogwertvalidierung,
+  Störmeldung nach 10 Minuten, Status „Zustand“ und „Leuchte“), „Govee Licht“ (24 Zeilen: Dimmer unmittelbar an
+  die Leuchte, Begrenzer 1–100, Farbtemperatur-Regler, sechs feste Weiß- und Farbtasten, stufenlose Farbe aus
+  drei Reglern über den LoxBerry, aus bei „Niemand zu Hause“) und „Govee Szenen und Balken“ (16 Zeilen: drei
+  Szenen, zwei Segmentmuster, Szene nach Kennung, PV-Leistung als Prozentbalken). Die Namen werden auf die erste
+  eingerichtete Leuchte gerechnet.
+* **Wer die alte Liste gebaut hat:** Sie setzte die Lichtsteuerung voraus (im Musterprojekt ohne Muster), den
+  PV-Balken über einen Status mit elf Befehlen und eine Ausfallmeldung über einen Vergleicher an `FEHL` ohne
+  Verzögerung – ein stehender LoxBerry blieb dabei unbemerkt. Die neuen Seiten vermeiden das.
+* **Neues Feld `ZAEHLER`** (Lebenszeichen des Abrufdienstes, 0 bis 999, -1 ohne Lauf): steht hinten in der
+  Statuszeile (`…;FEHL=…;ZAEHLER=…`), in der Zeile für ein unbekanntes Gerät und im Kopf der Sammelzeile
+  (`geraet=alle`). Es ändert sich mit jeder Runde des Dienstes; bleibt es stehen, steht der LoxBerry oder der
+  Dienst. `ALTER` taugt dafür nicht sicher: bei laufendem Dienst bleibt der Abstand zwischen Abfrage und letzter
+  Antwort nahezu gleich. Kein bestehender Suchtext ändert sich, bestehende Importe laufen weiter. **Wer `ZAEHLER`
+  nutzen will,** legt im Behälter `GOVEE <Name> Zustand` einen Befehl `GOVEE_<Nr>_ZAEHLER` mit dem Suchtext
+  `\i;ZAEHLER=\i\v` von Hand an (Minimum -1, Maximum 999) – ein neuer Import legt alle Eingänge doppelt an. Die
+  Sammelvorlage „Zustand aller Leuchten“ trägt dafür einen Befehl `GOVEE_ALLE_ZAEHLER`.
+* **Vorlagentitel fest deutsch:** Behälter und Befehle heißen auch bei englischer Oberfläche
+  `GOVEE <Name> Zustand`, `<Name> - Ein/Aus`, `<Name> - Kerzenlicht (H70C4)` …, wie Liste, Bild und
+  Musterprojekt; die
+  Kommentare bleiben übersetzt. Betrifft nur neu eingelesene Vorlagen – Config benennt Importiertes nicht um.
+* **Texte berichtigt:** Schritt 1 nennt MQTT und den virtuellen Eingang als gleichwertige Wege, Schritt 5 das
+  Lebenszeichen; der Kommentar der Vorlage „Stufenlos über den LoxBerry“ nennt statt eines
+  „Lichtszene-Bausteins“ (gibt es in Config nicht) drei Schieberegler mit einer Formel; der Kommentar der
+  Sammelvorlage sagt richtig, dass sich ihre Titel von denen der Einzeldateien unterscheiden.
+* Kein Verhalten des Dienstes, der Befehle oder des MQTT-Wegs geändert. Gerendert unter PHP 7.4, 8.4 und 8.5,
+  nicht am Gerät angesehen.
 
 ## Neu in 0.9.26
 
@@ -455,7 +491,7 @@ alle vier bestanden.
 | **Cloud** | offizielle Entwicklerschnittstelle mit API-Schlüssel, nur für Geräte ohne LAN Control |
 | **Eigene Szenen** | wer die Befehlsfolge seiner eigenen Leuchte kennt, hinterlegt sie selbst; geprüft wird sie beim Speichern auf Länge und Prüfsumme |
 | **Loxone-Vorlagen** | fertige XML-Importdateien: virtueller Ausgang für Grundbefehle, virtueller Ausgang für Szenen und Balken, **virtueller Ausgang über den LoxBerry mit stufenlosen Analogwerten**, virtueller Eingang für den Zustand |
-| **Ausfallerkennung** | `OK` und `ALTER` werden zur Abrufzeit gerechnet, dazu ein Zähler fehlgeschlagener Abrufe in Folge und ein Herzschlag über MQTT |
+| **Ausfallerkennung** | `OK` und `ALTER` werden zur Abrufzeit gerechnet, dazu ein Zähler fehlgeschlagener Abrufe in Folge, das Lebenszeichen `ZAEHLER` des Abrufdienstes und ein Herzschlag über MQTT |
 | **Diagnose** | Trockenlauf (zeigt, *was* ein Befehl sendet, ohne ihn zu senden), zeitlich begrenzter Mitschnitt des UDP-Verkehrs, Rohantwort je Leuchte |
 | **Gruppen** | `geraet=alle` schaltet alle eingerichteten Leuchten und liest sie in einem Abruf |
 
@@ -527,6 +563,15 @@ vergibt Szenenkennungen und die Form der Segmentbefehle je Modellreihe. Der
 Katalog stammt von der Stehlampe H6076, der Lichterkette H70C4 und einem
 RGBIC-Streifen.
 
+## Einbindung in Loxone
+
+Der Reiter *Einbindung in Loxone* führt in sieben Schritten durch beide Richtungen, mit den fertigen
+Importdateien je Leuchte (Zustand, Grundbefehle, Szenen und Balken, stufenlos über den LoxBerry) und in
+Schritt 6 den **Baustein-Listen** der drei Seiten zum Nachbauen. Fertig verbunden stehen die Bausteine auf den
+Seiten „Govee“, „Govee Licht“ und „Govee Szenen und Balken“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) – die ganze
+Projektdatei mit allen Plugin-Seiten und Vorlagen.
+
 ## Endpunkt für den Miniserver
 
     /plugins/govee/index.php?token=<TOKEN>&aktion=<Befehl>
@@ -553,7 +598,10 @@ bestehende Suchmuster in Loxone gültig bleiben:
   eingerichtete Leuchte. Gemeldet wird je Gerät, nicht pauschal.
 
 Die Statuszeile trägt hinten zusätzlich `FEHL` — die Zahl der Abrufe in Folge,
-bei denen dieses Gerät nicht geantwortet hat.
+bei denen dieses Gerät nicht geantwortet hat. Seit 0.9.27 folgt `ZAEHLER`, das
+Lebenszeichen des Abrufdienstes (Zeitstempel der letzten Dienstrunde modulo
+1000, -1 wenn der Dienst noch nie lief); es steht auch in der Zeile für ein
+unbekanntes Gerät und im Kopf der Sammelzeile.
 
 `ein`, `aus`, `hell`, `kelvin` und `farbe` mit **demselben** Wert an dieselbe
 Leuchte innerhalb von 60 s gehen nicht erneut hinaus; die Antwort lautet dann
@@ -596,8 +644,8 @@ ausfiel.
     webfrontend/html/index.php        Endpunkt für den Miniserver, Token-geschützt
     webfrontend/htmlauth/index.php    Oberfläche, fünf Reiter
     webfrontend/htmlauth/gv_test.php  Selbstprüfung und die Aktionen des Reiters Test
-    templates/lang/language_de.ini    466 Schlüssel
-    templates/lang/language_en.ini    dieselben 466 Schlüssel
+    templates/lang/language_de.ini    616 Schlüssel
+    templates/lang/language_en.ini    dieselben 616 Schlüssel
 
 Der Cloud-Schlüssel steht in einer eigenen Datei mit den Rechten 0600, nicht in
 der Konfiguration, die die Oberfläche anzeigt. Sein Wert wird nirgends

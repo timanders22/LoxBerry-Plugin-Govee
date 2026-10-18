@@ -808,6 +808,24 @@ function gv_dienst_lebenszeichen()
     return $ts > 0 ? max(0, time() - $ts) : -1;
 }
 
+/**
+ * Lebenszeichen des Abrufdienstes fuer den Miniserver (seit 0.9.27, Welle Bild 19; Entwurf Welle 19 gv, E3):
+ * der Zeitstempel der letzten Dienstrunde aus zustand.json modulo 1000, -1 wenn der Dienst noch nie lief.
+ *
+ * Warum nicht ALTER: die LAN-Runde beginnt auf der ganzen Sekunde alle 'intervall' Sekunden, Loxone fragt alle
+ * 60 s - der Abstand zwischen Abfrage und letzter Antwort ist bei laufendem Dienst nahezu gleich, eine
+ * Analogwertvalidierung auf ALTER koennte bei gesunder Anlage melden (aus dem Code abgeleitet). Der Zeitstempel
+ * der Dienstrunde wechselt dagegen in JEDER Runde, auch wenn keine Leuchte antwortet; steht der LoxBerry oder der
+ * Dienst, bleibt er stehen. Modulo 1000, damit der Wert in einen kleinen Bereich passt (MaxVal 999, wie
+ * Sprachsteuerung 0.12.5). Steht hinten in jeder Zeile - kein bestehender Suchtext aendert sich.
+ */
+function gv_zaehler()
+{
+    $z = gv_zustand();
+    $ts = isset($z['ts']) ? (int) $z['ts'] : 0;
+    return $ts > 0 ? $ts % 1000 : -1;
+}
+
 /** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
 function gv_alter()
 {
@@ -1450,8 +1468,9 @@ function gv_nachricht_bauen($aktion, $g, $b, $cfg = null)
             if (!isset($b['r']) && isset($b['wert'])) {
                 /* Farbe als eine Zahl: r*65536 + g*256 + b. Ein virtueller
                  * Ausgang traegt genau einen Analogwert, drei Kanaele passen
-                 * anders nicht durch. In Loxone rechnet ein Formel-Baustein
-                 * die drei Ausgaenge des Lichtszene-Bausteins zusammen. */
+                 * anders nicht durch. In Loxone zum Beispiel aus drei
+                 * Schiebereglern mit einer Formel I1*65536+I2*256+I3 (einen
+                 * "Lichtszene-Baustein" gibt es in Config nicht; Welle Bild 19). */
                 $z = max(0, min(16777215, (int) $b['wert']));
                 $b['r'] = ($z >> 16) & 0xFF;
                 $b['g'] = ($z >> 8) & 0xFF;
@@ -3141,6 +3160,9 @@ function gv_status_felder($g = null)
          * ALTER=0 und FEHL=0, also "frisch". */
         'ALTER'  => array('s', -1, 2147483647, 'GV_FELD.ALTER', 'GV_KACHEL.ALTER'),
         'FEHL'   => array('', -1, 2147483647, 'GV_FELD.FEHL',  'GV_KACHEL.FEHL'),
+        /* Seit 0.9.27 (Welle Bild 19 E3): das Lebenszeichen des Abrufdienstes, gv_zaehler(). Gehoert dem Dienst,
+         * nicht der Leuchte - in der Sammelvorlage steht es deshalb einmal, nicht je Leuchte. */
+        'ZAEHLER' => array('', -1, 999, 'GV_FELD.ZAEHLER', 'GV_KACHEL.ZAEHLER'),
     );
 }
 
@@ -3148,6 +3170,47 @@ function gv_status_felder($g = null)
 function gv_klartext($schluessel)
 {
     return trim(strip_tags(html_entity_decode(gv_t($schluessel), ENT_QUOTES, 'UTF-8')));
+}
+
+/**
+ * Titel einer erzeugten Vorlage: fest deutsch (seit 0.9.27, Welle Bild 19 E6; Sprachregel 13.10.2026,
+ * Regeln/07 "Sprache einer Loxone-Vorlage"). Gelesen wird derselbe Schluessel aus language_de.ini - die
+ * Kommentare bleiben ueber gv_klartext() in der Sprache der Oberflaeche. Bis 0.9.26 kamen auch die Titel aus der
+ * Oberflaechensprache; eine englische Oberflaeche legte "Lichtleiste - On/off" an, und Baustein-Liste, Bild und
+ * Musterprojekt passten nicht mehr. Config benennt Importiertes nicht um: bestehende Projekte behalten ihre Namen.
+ */
+function gv_titel($schluessel)
+{
+    return trim(strip_tags(html_entity_decode(gv_t_de($schluessel), ENT_QUOTES, 'UTF-8')));
+}
+
+/** Wie gv_t(), aber immer aus language_de.ini (nur fuer gv_titel()); fehlt der Schluessel dort, gilt gv_t(). */
+function gv_t_de($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        /* Dieselbe Pfadregel wie gv_t(). */
+        $home = gv_paths()['home'];
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home !== '' ? $home . '/templates/plugins/' . $ordner . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_de.ini', true, INI_SCANNER_RAW);
+        if (!is_array($texte)) {
+            $texte = array();
+        }
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) {
+                continue;
+            }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    $teile = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$teile[0]][$teile[1]]) ? $texte[$teile[0]][$teile[1]] : gv_t($schluessel);
 }
 
 /**
@@ -3166,19 +3229,19 @@ function gv_vorlage_ausgang($nummer = 1)
     $name = $g['name'];
     $cmds = array();
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.EINAUS'),
+        'title'   => $name . ' - ' . gv_titel('GV_XML.EINAUS'),
         'on'      => gv_cmd_schalten(1),
         'off'     => gv_cmd_schalten(0),
         'analog'  => false,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.HELL'),
+        'title'   => $name . ' - ' . gv_titel('GV_XML.HELL'),
         'comment' => gv_klartext('GV_XML.HELL_K'),
         'on'      => str_replace('"value":100', '"value":<v.0>', gv_cmd_helligkeit(100)),
         'analog'  => true,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.KELVIN'),
+        'title'   => $name . ' - ' . gv_titel('GV_XML.KELVIN'),
         'comment' => sprintf(gv_klartext('GV_XML.KELVIN_K'), $g['kmin'], $g['kmax']),
         'on'      => str_replace('"colorTemInKelvin":4000', '"colorTemInKelvin":<v.0>', gv_cmd_kelvin(4000)),
         'analog'  => true,
@@ -3189,7 +3252,7 @@ function gv_vorlage_ausgang($nummer = 1)
         array('GV_XML.KALTWEISS', $g['kmax']),
     ) as $w) {
         $cmds[] = array(
-            'title'  => $name . ' - ' . gv_klartext($w[0]) . ' ' . $w[1] . ' K',
+            'title'  => $name . ' - ' . gv_titel($w[0]) . ' ' . $w[1] . ' K',
             'on'     => gv_cmd_kelvin($w[1]),
             'analog' => false,
         );
@@ -3200,13 +3263,13 @@ function gv_vorlage_ausgang($nummer = 1)
         array('GV_XML.BLAU',  0, 0, 255),
     ) as $w) {
         $cmds[] = array(
-            'title'  => $name . ' - ' . gv_klartext($w[0]),
+            'title'  => $name . ' - ' . gv_titel($w[0]),
             'on'     => gv_cmd_farbe($w[1], $w[2], $w[3]),
             'analog' => false,
         );
     }
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.STATUS'),
+        'title'   => $name . ' - ' . gv_titel('GV_XML.STATUS'),
         'comment' => gv_klartext('GV_XML.STATUS_K'),
         'on'      => gv_msg('devStatus', new stdClass()),
         'analog'  => false,
@@ -3239,7 +3302,7 @@ function gv_vorlage_szenen($nummer = 1)
             'title'   => $g['name'] . ' - '
                        . (!empty($szene['eigen'])
                           ? trim(strip_tags(html_entity_decode($szene['name'], ENT_QUOTES, 'UTF-8')))
-                          : gv_klartext($szene['name']))
+                          : gv_titel($szene['name']))
                        . ' (' . $szene['sku'] . ')',
             'comment' => sprintf(gv_klartext('GV_XML.SZENE_K'), $szene['sku'], count($szene['cmd'])),
             'on'      => gv_pt_nachricht($szene['cmd']),
@@ -3253,7 +3316,7 @@ function gv_vorlage_szenen($nummer = 1)
                 continue;
             }
             $cmds[] = array(
-                'title'   => $g['name'] . ' - ' . sprintf(gv_klartext('GV_XML.BALKEN'), $p),
+                'title'   => $g['name'] . ' - ' . sprintf(gv_titel('GV_XML.BALKEN'), $p),
                 'comment' => sprintf(gv_klartext('GV_XML.BALKEN_K'), $g['pixel']),
                 'on'      => gv_pt_nachricht($bef),
                 'analog'  => false,
@@ -3283,7 +3346,7 @@ function gv_vorlage_szenen($nummer = 1)
                 continue;
             }
             $cmds[] = array(
-                'title'   => $g['name'] . ' - ' . gv_klartext($m[0]),
+                'title'   => $g['name'] . ' - ' . gv_titel($m[0]),
                 'comment' => sprintf(gv_klartext('GV_XML.SEG_K'), $g['pixel']),
                 'on'      => gv_pt_nachricht($bef),
                 'analog'  => false,
@@ -3294,7 +3357,7 @@ function gv_vorlage_szenen($nummer = 1)
     return array(
         'VQ_GOVEE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $g['name']) . '_Szenen.xml',
         gv_xml_virtual_out(array(
-            'title'   => 'GOVEE ' . $g['name'] . ' ' . gv_klartext('GV_XML.SZENEN'),
+            'title'   => 'GOVEE ' . $g['name'] . ' ' . gv_titel('GV_XML.SZENEN'),
             'comment' => sprintf(gv_klartext('GV_XML.KOPF_SZENEN'), $g['ip']),
             'address' => '/dev/udp/' . $g['ip'] . '/' . GV_PORT_BEFEHL,
         ), $cmds),
@@ -3337,29 +3400,29 @@ function gv_vorlage_lox($nummer = 1)
      * Loxone Config fehlt der Geraeteknoten: zwei gleich benannte Bausteine
      * sind dort nicht auseinanderzuhalten. Gemessen am 05.09.2026: 128
      * Bausteine, 104 verschiedene Titel. Der SUCHTEXT bleibt unberuehrt. */
-    $lb_zusatz = ' ' . gv_klartext('GV_XML.LOX_UEBER');
+    $lb_zusatz = ' ' . gv_titel('GV_XML.LOX_UEBER');
     $cmds = array();
 
     $cmds[] = array(
-        'title'  => $name . ' - ' . gv_klartext('GV_XML.EINAUS') . $lb_zusatz,
+        'title'  => $name . ' - ' . gv_titel('GV_XML.EINAUS') . $lb_zusatz,
         'on'     => sprintf($pfad, 'ein'),
         'off'    => sprintf($pfad, 'aus'),
         'analog' => false,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.HELL') . $lb_zusatz,
+        'title'   => $name . ' - ' . gv_titel('GV_XML.HELL') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_HELL_K'),
         'on'      => sprintf($pfad, 'hell') . '&wert=<v.0>',
         'analog'  => true,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.KELVIN') . $lb_zusatz,
+        'title'   => $name . ' - ' . gv_titel('GV_XML.KELVIN') . $lb_zusatz,
         'comment' => sprintf(gv_klartext('GV_XML.KELVIN_K'), $g['kmin'], $g['kmax']),
         'on'      => sprintf($pfad, 'kelvin') . '&wert=<v.0>',
         'analog'  => true,
     );
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_FARBE') . $lb_zusatz,
+        'title'   => $name . ' - ' . gv_titel('GV_XML.LOX_FARBE') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_FARBE_K'),
         'on'      => sprintf($pfad, 'farbe') . '&wert=<v.0>',
         'analog'  => true,
@@ -3368,7 +3431,7 @@ function gv_vorlage_lox($nummer = 1)
      * Ein Baustein, der nie wirkt, gehoert nicht in die Vorlage (U9). */
     if ($g['art'] !== 'cloud') {
         $cmds[] = array(
-            'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_SZENENR') . $lb_zusatz,
+            'title'   => $name . ' - ' . gv_titel('GV_XML.LOX_SZENENR') . $lb_zusatz,
             'comment' => gv_klartext('GV_XML.LOX_SZENENR_K'),
             'on'      => sprintf($pfad, 'szene') . '&nr=<v.0>',
             'analog'  => true,
@@ -3377,14 +3440,14 @@ function gv_vorlage_lox($nummer = 1)
     /* Segmente (Balken) gibt es ebenfalls nur ueber LAN (Pruefung 29.09.2026). */
     if ($g['pixel'] > 0 && $g['art'] !== 'cloud') {
         $cmds[] = array(
-            'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_BALKEN') . $lb_zusatz,
+            'title'   => $name . ' - ' . gv_titel('GV_XML.LOX_BALKEN') . $lb_zusatz,
             'comment' => sprintf(gv_klartext('GV_XML.LOX_BALKEN_K'), $g['pixel']),
             'on'      => sprintf($pfad, 'balken') . '&wert=<v.0>',
             'analog'  => true,
         );
     }
     $cmds[] = array(
-        'title'   => $name . ' - ' . gv_klartext('GV_XML.LOX_ABRUF') . $lb_zusatz,
+        'title'   => $name . ' - ' . gv_titel('GV_XML.LOX_ABRUF') . $lb_zusatz,
         'comment' => gv_klartext('GV_XML.LOX_ABRUF_K'),
         'on'      => sprintf($pfad, 'abruf'),
         'analog'  => false,
@@ -3393,7 +3456,7 @@ function gv_vorlage_lox($nummer = 1)
     return array(
         'VQ_GOVEE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $name) . '_ueber_LoxBerry.xml',
         gv_xml_virtual_out(array(
-            'title'   => 'GOVEE ' . $name . ' ' . gv_klartext('GV_XML.LOX_UEBER'),
+            'title'   => 'GOVEE ' . $name . ' ' . gv_titel('GV_XML.LOX_UEBER'),
             'comment' => gv_klartext('GV_XML.KOPF_LOX'),
             'address' => 'http://' . $host,
         ), $cmds),
@@ -3446,7 +3509,7 @@ function gv_vorlage_eingang($nummer = 1)
     return array(
         'VI_GOVEE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $g['name']) . '.xml',
         gv_xml_virtual_in_http(array(
-            'title'   => 'GOVEE ' . $g['name'] . ' ' . gv_klartext('GV_XML.ZUSTAND'),
+            'title'   => 'GOVEE ' . $g['name'] . ' ' . gv_titel('GV_XML.ZUSTAND'),
             'address' => $adresse,
             'polling' => '60',
             'comment' => sprintf(gv_klartext('GV_XML.KOPF_EINGANG'), date('d.m.Y')),
@@ -3461,9 +3524,11 @@ function gv_vorlage_eingang($nummer = 1)
  * sind das acht Abrufe je Takt, die alle dieselbe Datei lesen. Diese Vorlage
  * fragt einmal und verteilt die Werte.
  *
- * Sie ist eine ALTERNATIVE zu den Einzeldateien, kein Zusatz: die Titel sind
- * dieselben, und zweimal eingelesen sind zwei Bausteine. Das steht auch im
- * Kommentar der Datei, wo es beim Import mitwandert.
+ * Sie ist eine ALTERNATIVE zu den Einzeldateien, kein Zusatz: beide eingelesen
+ * sind zwei Bausteine auf derselben Leuchte (die Titel unterscheiden sich durch
+ * GOVEE_ALLE_). Das steht auch im Kommentar der Datei, wo es beim Import
+ * mitwandert. ZAEHLER gehoert dem Dienst und steht einmal im Kopf der Zeile
+ * (GOVEE_ALLE_ZAEHLER, seit 0.9.27).
  */
 function gv_vorlage_eingang_alle()
 {
@@ -3478,6 +3543,9 @@ function gv_vorlage_eingang_alle()
     $cmds = array();
     foreach ($geraete as $nr => $g) {
         foreach (gv_status_felder($g) as $feld => $info) {
+            if ($feld === 'ZAEHLER') {
+                continue;   // gehoert dem Dienst, steht einmal im Kopf (siehe unten)
+            }
             $cmds[] = array(
                 /* Eigenes Praefix: die Einzeldateien tragen GOVEE_<nr>_<FELD>,
                  * und das ist die bestehende Linie - sie behaelt ihre Namen.
@@ -3492,12 +3560,24 @@ function gv_vorlage_eingang_alle()
             );
         }
     }
+    /* Seit 0.9.27 (Welle Bild 19 E3): das Lebenszeichen des Abrufdienstes, einmal fuer alle Leuchten - die
+     * Sammelzeile traegt es im Kopf (GOVEE;OK=..;N=..;ALTER=..;ZAEHLER=..), die Geraetezeilen nicht. Der Suchtext
+     * ohne G<n>_ trifft nur dort. */
+    $zinfo = gv_status_felder();
+    $cmds[] = array(
+        'title'   => 'GOVEE_ALLE_ZAEHLER',
+        'comment' => gv_klartext($zinfo['ZAEHLER'][4]),
+        'einheit' => $zinfo['ZAEHLER'][0],
+        'check'   => '\i;ZAEHLER=\i\v',
+        'min'     => $zinfo['ZAEHLER'][1],
+        'max'     => $zinfo['ZAEHLER'][2],
+    );
     $adresse = 'http://' . $host . '/plugins/' . $p['plugin']
              . '/index.php?token=' . gv_token() . '&aktion=status&geraet=alle';
     return array(
         'VI_GOVEE_alle.xml',
         gv_xml_virtual_in_http(array(
-            'title'   => 'GOVEE ' . gv_klartext('GV_XML.ZUSTAND_ALLE'),
+            'title'   => 'GOVEE ' . gv_titel('GV_XML.ZUSTAND_ALLE'),
             'address' => $adresse,
             'polling' => '60',
             'comment' => sprintf(gv_klartext('GV_XML.KOPF_ALLE'), count($geraete), date('d.m.Y')),

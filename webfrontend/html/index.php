@@ -204,8 +204,10 @@ if ($gv_aktion === 'status' && $gv_nr === 'alle') {
     /* Ein Abruf fuer alle Leuchten. Die Feldnamen tragen die Geraetenummer
      * vorne, und jede Angabe steht hinter einem Semikolon - der Suchtext in
      * Loxone lautet also \i;G1_AN=\i\v und kann nichts anderes treffen. */
-    printf("GOVEE;OK=%d;N=%d;ALTER=%d\n",
-        (int) (!empty($gv_lox['ok'])), count($gv_alle), $gv_alter);
+    /* ZAEHLER (seit 0.9.27, Welle Bild 19 E3): das Lebenszeichen des Abrufdienstes, einmal im Kopf - es gehoert
+     * keiner Leuchte. Hinten angehaengt: kein bestehender Suchtext aendert sich. */
+    printf("GOVEE;OK=%d;N=%d;ALTER=%d;ZAEHLER=%d\n",
+        (int) (!empty($gv_lox['ok'])), count($gv_alle), $gv_alter, gv_zaehler());
     foreach ($gv_alle as $gv_i => $gv_z) {
         $gv_zeile = '';
         foreach (array('AN' => 'an', 'HELL' => 'hell', 'KELVIN' => 'kelvin',
@@ -229,17 +231,21 @@ if ($gv_aktion === 'status') {
          * gibt (die Nummern rutschen beim Loeschen einer Zeile), fuetterte
          * damit den Ausfallvergleich in Loxone mit einer fremden Groesse.
          * -1 heisst "nicht gemessen", und das ist hier die Wahrheit. */
-        printf("GOVEE;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=-1;FEHL=-1\n", count($gv_alle));
+        /* ZAEHLER ist hier der echte Wert (seit 0.9.27): er gehoert dem Dienst, nicht der Leuchte. */
+        printf("GOVEE;OK=0;GRUND=GERAET_UNBEKANNT;N=%d;ALTER=-1;FEHL=-1;ZAEHLER=%d\n", count($gv_alle),
+            gv_zaehler());
         exit;
     }
     /* FEHL steht HINTEN. Eine zusaetzliche Angabe am Ende laesst jedes
      * bestehende Suchmuster in Loxone unveraendert gueltig - das ist der
      * billigste Ort fuer eine Erweiterung. */
-    printf("GOVEE;OK=%d;AN=%s;HELL=%s;KELVIN=%s;R=%s;G=%s;B=%s;HEX=%s;ALTER=%d;FEHL=%d\n",
+    /* ZAEHLER steht seit 0.9.27 hinter FEHL (Welle Bild 19 E3): das Lebenszeichen des Abrufdienstes, aendert sich
+     * mit jeder Dienstrunde - ALTER tut das bei laufendem Dienst kaum. */
+    printf("GOVEE;OK=%d;AN=%s;HELL=%s;KELVIN=%s;R=%s;G=%s;B=%s;HEX=%s;ALTER=%d;FEHL=%d;ZAEHLER=%d\n",
         (int) $gv_g['ok'], gv_w($gv_g['an']), gv_w($gv_g['hell']), gv_w($gv_g['kelvin']),
         gv_w($gv_g['r']), gv_w($gv_g['g']), gv_w($gv_g['b']),
         ($gv_g['hex'] === null ? '-' : $gv_g['hex']), (int) $gv_g['alter'],
-        (int) $gv_g['fehl']);
+        (int) $gv_g['fehl'], gv_zaehler());
     exit;
 }
 

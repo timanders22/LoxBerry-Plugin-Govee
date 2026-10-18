@@ -929,6 +929,16 @@ if ($gv_rahmen) {
     padding-right: 32px; cursor: pointer; }
 .sm-tbl select { padding-right: 28px; background-position: right 7px center; }
 
+/* Welle Bild 19 (0.9.27): drei Seiten aus dem Musterprojekt in Schritt 6 - Bild, Ueberschrift, Schritte und
+   Hinweise je Seite (wie SignalBot 0.9.28). */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
+.sm-wrap h4.sm-h4, .sm-seite h4.sm-h4 { color: #4f7d17; font-size: 0.98em; font-weight: 700; margin: 22px 0 4px;
+    padding-top: 10px; border-top: 1px solid #e0e0e0; }
+.sm-schritte { margin: 6px 0 0 18px; padding: 0; }
+.sm-schritte li { margin: 3px 0; }
+
 </style>
 
 <div class="sm-wrap">
@@ -1493,32 +1503,196 @@ if ($gv_geraete) {
   </form>
 </div>
 
+<?php
+/**
+ * Die Baustein-Listen fuer Schritt 6 (Welle Bild 19, 0.9.27; Hausherr 11.10.2026: Vollausstattung, ein
+ * absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 19 gv, Entscheidungen 1-14).
+ * Drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitte "Govee" 18, "Govee Licht" 24 und "Govee Szenen und Balken" 16
+ * Zeilen, wortgleich). Je Tabellenzeile EIN Sprachschluessel BAUSTEIN.Z<seite>_<nn> = "Typ | Name | Parameter |
+ * Eingaenge" ohne Auszeichnung; jede Zelle und jeder Satz wird maskiert ausgegeben. Zeilen mit Prozentzeichen
+ * tragen es verdoppelt (%%) und gehen durch sprintf().
+ *
+ * Bis 0.9.26 stand hier eine Tabelle mit 8 Zeilen (LOX.B1-B8): Lichtsteuerung ohne Muster im Projekt,
+ * Schwellwertschalter und Statusbaustein mit elf Balkenbefehlen, Ausfall ueber einen Vergleicher "Schwelle 3" an
+ * FEHL ohne Verzoegerung - ein stehender LoxBerry blieb dabei unbemerkt.
+ *
+ * Rueckgabe: je Seite 'kopf' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze), 'zeilen'
+ * (je ein Text mit vier Zellen) - alles reiner Text, Namen wie im Musterprojekt; gv_bs_text() rechnet sie um.
+ */
+function gv_bausteinseiten()
+{
+    return array(
+        array('kopf' => 'Govee', 'bild' => 'einbindung_loxone.png',
+              'schritte' => array(
+                  gv_t('BAUSTEIN.S1_SCHRITT1'),
+                  sprintf(gv_t('BAUSTEIN.S1_SCHRITT2'), gv_t('REITER.TEST'), gv_t('TEST.K_SUCHE'), gv_t('REITER.EINSTELLUNGEN'), gv_t('EINST.K_UEBERNEHMEN'), gv_t('EINST.K_START'), gv_t('REITER.TEST'), gv_t('TEST.K_STATUS')),
+                  sprintf(gv_t('BAUSTEIN.S1_SCHRITT3'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VI')),
+                  gv_t('BAUSTEIN.S1_SCHRITT4'),
+                  gv_t('BAUSTEIN.S1_SCHRITT5'),
+                  gv_t('BAUSTEIN.S1_SCHRITT6')),
+              'zeilen' => array(
+                  gv_t('BAUSTEIN.Z1_01'),
+                  gv_t('BAUSTEIN.Z1_02'),
+                  gv_t('BAUSTEIN.Z1_03'),
+                  gv_t('BAUSTEIN.Z1_04'),
+                  gv_t('BAUSTEIN.Z1_05'),
+                  sprintf(gv_t('BAUSTEIN.Z1_06')),
+                  gv_t('BAUSTEIN.Z1_07'),
+                  gv_t('BAUSTEIN.Z1_08'),
+                  gv_t('BAUSTEIN.Z1_09'),
+                  gv_t('BAUSTEIN.Z1_10'),
+                  gv_t('BAUSTEIN.Z1_11'),
+                  gv_t('BAUSTEIN.Z1_12'),
+                  gv_t('BAUSTEIN.Z1_13'),
+                  gv_t('BAUSTEIN.Z1_14'),
+                  gv_t('BAUSTEIN.Z1_15'),
+                  gv_t('BAUSTEIN.Z1_16'),
+                  gv_t('BAUSTEIN.Z1_17'),
+                  sprintf(gv_t('BAUSTEIN.Z1_18'))),
+              'hinweise' => array(
+                  gv_t('BAUSTEIN.S1_H1'),
+                  gv_t('BAUSTEIN.S1_H2'),
+                  sprintf(gv_t('BAUSTEIN.S1_H3'), gv_t('LOX.K_VI_ALLE')),
+                  sprintf(gv_t('BAUSTEIN.S1_H4'), gv_t('LOX.K_TOKEN_NEU')),
+                  gv_t('BAUSTEIN.S1_H5'))),
+        array('kopf' => 'Govee Licht', 'bild' => 'einbindung_loxone_licht.png',
+              'schritte' => array(
+                  sprintf(gv_t('BAUSTEIN.S2_SCHRITT1'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VQ'), gv_t('LOX.K_VQ_LOX'), gv_t('REITER.EINSTELLUNGEN'), gv_t('EINST.L_STEUERUNG')),
+                  gv_t('BAUSTEIN.S2_SCHRITT2'),
+                  gv_t('BAUSTEIN.S2_SCHRITT3'),
+                  gv_t('BAUSTEIN.S2_SCHRITT4'),
+                  gv_t('BAUSTEIN.S2_SCHRITT5')),
+              'zeilen' => array(
+                  gv_t('BAUSTEIN.Z2_01'),
+                  gv_t('BAUSTEIN.Z2_02'),
+                  gv_t('BAUSTEIN.Z2_03'),
+                  gv_t('BAUSTEIN.Z2_04'),
+                  sprintf(gv_t('BAUSTEIN.Z2_05')),
+                  gv_t('BAUSTEIN.Z2_06'),
+                  gv_t('BAUSTEIN.Z2_07'),
+                  gv_t('BAUSTEIN.Z2_08'),
+                  gv_t('BAUSTEIN.Z2_09'),
+                  gv_t('BAUSTEIN.Z2_10'),
+                  gv_t('BAUSTEIN.Z2_11'),
+                  gv_t('BAUSTEIN.Z2_12'),
+                  gv_t('BAUSTEIN.Z2_13'),
+                  gv_t('BAUSTEIN.Z2_14'),
+                  gv_t('BAUSTEIN.Z2_15'),
+                  gv_t('BAUSTEIN.Z2_16'),
+                  gv_t('BAUSTEIN.Z2_17'),
+                  gv_t('BAUSTEIN.Z2_18'),
+                  gv_t('BAUSTEIN.Z2_19'),
+                  gv_t('BAUSTEIN.Z2_20'),
+                  gv_t('BAUSTEIN.Z2_21'),
+                  gv_t('BAUSTEIN.Z2_22'),
+                  gv_t('BAUSTEIN.Z2_23'),
+                  gv_t('BAUSTEIN.Z2_24')),
+              'hinweise' => array(
+                  gv_t('BAUSTEIN.S2_H1'),
+                  gv_t('BAUSTEIN.S2_H2'),
+                  gv_t('BAUSTEIN.S2_H3'),
+                  gv_t('BAUSTEIN.S2_H4'),
+                  gv_t('BAUSTEIN.S2_H5'),
+                  sprintf(gv_t('BAUSTEIN.S2_H6'), gv_t('LOX.K_VQ_LOX')),
+                  gv_t('BAUSTEIN.S2_H7'))),
+        array('kopf' => 'Govee Szenen und Balken', 'bild' => 'einbindung_loxone_szenen_balken.png',
+              'schritte' => array(
+                  sprintf(gv_t('BAUSTEIN.S3_SCHRITT1'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VQ_SZENEN'), gv_t('LOX.K_VQ_LOX')),
+                  gv_t('BAUSTEIN.S3_SCHRITT2'),
+                  gv_t('BAUSTEIN.S3_SCHRITT3'),
+                  sprintf(gv_t('BAUSTEIN.S3_SCHRITT4'), gv_t('REITER.TEST'))),
+              'zeilen' => array(
+                  gv_t('BAUSTEIN.Z3_01'),
+                  gv_t('BAUSTEIN.Z3_02'),
+                  gv_t('BAUSTEIN.Z3_03'),
+                  gv_t('BAUSTEIN.Z3_04'),
+                  gv_t('BAUSTEIN.Z3_05'),
+                  gv_t('BAUSTEIN.Z3_06'),
+                  gv_t('BAUSTEIN.Z3_07'),
+                  gv_t('BAUSTEIN.Z3_08'),
+                  gv_t('BAUSTEIN.Z3_09'),
+                  gv_t('BAUSTEIN.Z3_10'),
+                  gv_t('BAUSTEIN.Z3_11'),
+                  gv_t('BAUSTEIN.Z3_12'),
+                  gv_t('BAUSTEIN.Z3_13'),
+                  gv_t('BAUSTEIN.Z3_14'),
+                  sprintf(gv_t('BAUSTEIN.Z3_15')),
+                  sprintf(gv_t('BAUSTEIN.Z3_16'))),
+              'hinweise' => array(
+                  gv_t('BAUSTEIN.S3_H1'),
+                  gv_t('BAUSTEIN.S3_H2'),
+                  gv_t('BAUSTEIN.S3_H3'),
+                  sprintf(gv_t('BAUSTEIN.S3_H4'), gv_t('REITER.TEST'), gv_t('TEST.K_SZENENR')),
+                  gv_t('BAUSTEIN.S3_H5'))),
+    );
+}
+
+/**
+ * Ein Text der Baustein-Seiten fuer die Ausgabe: die Namen aus den Vorlagen (Behaelter "GOVEE Lichtleiste ...",
+ * Befehle GOVEE_1_... und "Lichtleiste - ...", Bausteine "Lichtleiste (Govee)") auf die gezeigte Leuchte
+ * gerechnet - so, wie die Vorlagen-Knoepfe sie fuer diese Leuchte erzeugen (Entwurf Welle 19 gv, Abschnitt 4:
+ * Name und Nummer aus dem ersten Geraet; ohne Geraet "Lichtleiste"/1 wie das Musterprojekt). Der Behaelter der
+ * Grundbefehle traegt die SKU, wenn eine eingetragen ist. "Zustand abfragen (Geraet 1)" bleibt stehen: so heisst
+ * der Knopf im Reiter Test, und er fragt immer Geraet 1.
+ */
+function gv_bs_text($s, $g)
+{
+    $s = (string) $s;
+    if (!is_array($g)) {
+        return $s;
+    }
+    $nr = (int) $g['nr'];
+    $name = (string) $g['name'];
+    $sku = (string) $g['sku'];
+    if ($nr === 1 && $name === 'Lichtleiste' && $sku === '') {
+        return $s;
+    }
+    $vq = 'GOVEE ' . $name . ($sku !== '' ? ' (' . $sku . ')' : '');
+    /* strtr: ein Durchgang, laengster Treffer zuerst - ein Name, der selbst "Lichtleiste" enthaelt, wird nicht
+     * ein zweites Mal ersetzt. */
+    return strtr($s, array(
+        "\u{201e}GOVEE Lichtleiste\u{201c}" => "\u{201e}" . $vq . "\u{201c}",
+        "\u{201c}GOVEE Lichtleiste\u{201d}" => "\u{201c}" . $vq . "\u{201d}",
+        'GOVEE_1_' => 'GOVEE_' . $nr . '_',
+        'Lichtleiste' => $name,
+    ));
+}
+
+// Gezeigt wird die Leuchte mit der kleinsten Nummer (gv_geraete() ist danach sortiert).
+$gv_bsg = $gv_geraete ? reset($gv_geraete) : null;
+?>
 <div class="sm-step"><b>6. <?= gv_e(gv_t('LOX.S6_T')) ?></b><br>
 <?= gv_t('LOX.S6') ?>
+<?php foreach (gv_bausteinseiten() as $gv_bsei) { ?>
+<h4 class="sm-h4"><?= gv_e($gv_bsei['kopf']) ?></h4>
+<div class="sm-hinweis"><b><?= gv_e(gv_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($gv_bsei['schritte'] as $gv_bsx) { ?>
+<li><?= gv_e(gv_bs_text($gv_bsx, $gv_bsg)) ?></li>
+<?php } ?>
+</ol></div>
 <table class="sm-tbl">
 <tr><th style="width:28px;">#</th><th><?= gv_e(gv_t('LOX.B_TYP')) ?></th><th><?= gv_e(gv_t('LOX.B_NAME')) ?></th>
     <th><?= gv_e(gv_t('LOX.B_PARAM')) ?></th><th><?= gv_e(gv_t('LOX.B_EIN')) ?></th></tr>
-<tr><td>1</td><td><?= gv_t('LOX.B1_TYP') ?></td><td><span class="sm-mono">Govee Licht</span></td>
-    <td><?= gv_t('LOX.B1_PARAM') ?></td><td><?= gv_t('LOX.B1_EIN') ?></td></tr>
-<tr><td>2</td><td><?= gv_t('LOX.B2_TYP') ?></td><td><span class="sm-mono">Govee Ein/Aus</span></td>
-    <td><?= gv_t('LOX.B2_PARAM') ?></td><td><?= gv_t('LOX.B2_EIN') ?></td></tr>
-<tr><td>3</td><td><?= gv_t('LOX.B3_TYP') ?></td><td><span class="sm-mono">Govee Helligkeit</span></td>
-    <td><?= gv_t('LOX.B3_PARAM') ?></td><td><?= gv_t('LOX.B3_EIN') ?></td></tr>
-<tr><td>4</td><td><?= gv_t('LOX.B4_TYP') ?></td><td><span class="sm-mono">Govee Farbtemperatur</span></td>
-    <td><?= gv_t('LOX.B4_PARAM') ?></td><td><?= gv_t('LOX.B4_EIN') ?></td></tr>
-<tr><td>5</td><td><?= gv_t('LOX.B5_TYP') ?></td><td><span class="sm-mono">Govee Szene</span></td>
-    <td><?= gv_t('LOX.B5_PARAM') ?></td><td><?= gv_t('LOX.B5_EIN') ?></td></tr>
-<tr><td>6</td><td><?= gv_t('LOX.B6_TYP') ?></td><td><span class="sm-mono">Govee Balken PV</span></td>
-    <td><?= gv_t('LOX.B6_PARAM') ?></td><td><?= gv_t('LOX.B6_EIN') ?></td></tr>
-<tr><td>7</td><td><?= gv_t('LOX.B7_TYP') ?></td><td><span class="sm-mono">Govee Ausfall</span></td>
-    <td><?= gv_t('LOX.B7_PARAM') ?></td><td><?= gv_t('LOX.B7_EIN') ?></td></tr>
-<tr><td>8</td><td><?= gv_t('LOX.B8_TYP') ?></td><td><span class="sm-mono">Govee Meldung</span></td>
-    <td><?= gv_t('LOX.B8_PARAM') ?></td><td><?= gv_t('LOX.B8_EIN') ?></td></tr>
+<?php foreach ($gv_bsei['zeilen'] as $gv_bsi => $gv_bsz) {
+    $gv_bsc = array_pad(explode(' | ', $gv_bsz, 4), 4, ''); ?>
+<tr><td><?= (int) $gv_bsi + 1 ?></td><td><?= gv_e(gv_bs_text($gv_bsc[0], $gv_bsg)) ?></td><td><?= gv_e(gv_bs_text($gv_bsc[1], $gv_bsg)) ?></td>
+    <td><?= gv_e(gv_bs_text($gv_bsc[2], $gv_bsg)) ?></td><td><?= gv_e(gv_bs_text($gv_bsc[3], $gv_bsg)) ?></td></tr>
+<?php } ?>
 </table>
-<p><b><?= gv_e(gv_t('LOX.ZU_TITEL')) ?></b></p>
-<p><?= gv_t('LOX.ZU_3') ?></p>
-<p><?= gv_t('LOX.ZU_6') ?></p>
-<p><?= gv_t('LOX.ZU_8') ?></p>
+<div class="sm-warnung"><b><?= gv_e(gv_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($gv_bsei['hinweise'] as $gv_bsx) { ?>
+<li><?= gv_e(gv_bs_text($gv_bsx, $gv_bsg)) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= gv_e($gv_bsei['bild']) ?>" alt="<?= gv_e(gv_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= gv_e(sprintf(gv_t('LOX.BILD_UNTERSCHRIFT'), $gv_bsei['kopf'])) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= gv_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
 </div>
 
 <div class="sm-step"><b>7. <?= gv_e(gv_t('LOX.S7_T')) ?></b><br><?= gv_t('LOX.S7') ?></div>
