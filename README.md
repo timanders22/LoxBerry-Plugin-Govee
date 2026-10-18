@@ -3,9 +3,18 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.27 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.28 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.28
+
+Pflege: Die Zustandsvorlage trägt kein Erzeugungsdatum mehr. Kein Neuimport nötig.
+
+* **Kommentar der Zustandsvorlage** (Knopf „Zustand (virtueller Eingang)“, `VI_GOVEE_<Name>.xml`): ohne Datum,
+  wortgleich mit dem LoxBerry-Plugins Musterprojekt. Die erzeugte Datei ist damit an jedem Tag dieselbe. Titel,
+  Befehle, Suchtexte und Grenzen sind unverändert – wer die Vorlage schon eingelesen hat, muss nichts tun.
+* Dienst, Endpunkt, übrige Vorlagen und Reiter unverändert.
 
 ## Neu in 0.9.27
 

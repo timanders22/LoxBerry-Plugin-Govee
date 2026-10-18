@@ -3512,7 +3512,8 @@ function gv_vorlage_eingang($nummer = 1)
             'title'   => 'GOVEE ' . $g['name'] . ' ' . gv_titel('GV_XML.ZUSTAND'),
             'address' => $adresse,
             'polling' => '60',
-            'comment' => sprintf(gv_klartext('GV_XML.KOPF_EINGANG'), date('d.m.Y')),
+            // Seit 0.9.28 ohne Erzeugungsdatum, wie Musterprojekt/vorlagen_w19/VI_govee.xml (Pflegewelle 21).
+            'comment' => gv_klartext('GV_XML.KOPF_EINGANG'),
         ), $cmds),
     );
 }
