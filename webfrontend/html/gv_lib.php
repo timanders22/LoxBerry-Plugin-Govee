@@ -321,6 +321,9 @@ function gv_vorgaben()
          * seit 0.9.9; ohne Eintrag hier wies das Zurueckspielen die EIGENE
          * Sicherung als "unbekannte Einstellung" ab (U3). */
         'nr_hoechste'   => 0,
+        /* Gruppe 3 / MQTT (0.9.30): Haken "Befehle ueber MQTT annehmen" der Befehlsbruecke, ab Werk aus.
+         * Schaltende Befehle brauchen zusaetzlich steuerung_ein (zweiter Haken, Entwurf gv E7). */
+        'befehle_mqtt_ein' => 0,
     );
 }
 
@@ -809,7 +812,8 @@ function gv_dienst_lebenszeichen()
 }
 
 /**
- * Lebenszeichen des Abrufdienstes fuer den Miniserver (seit 0.9.27, Welle Bild 19; Entwurf Welle 19 gv, E3):
+ * Lebenszeichen des Abrufdienstes fuer den Miniserver (seit 0.9.27, Welle Bild 19; Entwurf Welle 19 gv, E3).
+ * Seit 0.9.30 der Rundenzaehler aus zustand.json (siehe unten); bis 0.9.29 stand hier:
  * der Zeitstempel der letzten Dienstrunde aus zustand.json modulo 1000, -1 wenn der Dienst noch nie lief.
  *
  * Warum nicht ALTER: die LAN-Runde beginnt auf der ganzen Sekunde alle 'intervall' Sekunden, Loxone fragt alle
@@ -821,9 +825,14 @@ function gv_dienst_lebenszeichen()
  */
 function gv_zaehler()
 {
+    /* Seit 0.9.30 (Gruppe 3 / MQTT, Entwurf gv 2.2, E3): ein echter Rundenzaehler 0..999, den der Dienst in jeder
+     * LAN-Runde in zustand.json fortschreibt (gv_zustand_schreiben()), -1 solange keiner da ist ("Dienst lief nie").
+     * EINE Quelle fuer HTTP (ZAEHLER) und MQTT (status/zaehler). Bis 0.9.29: Zeitstempel der Runde modulo 1000 - bei
+     * einem Abfragetakt von 1000, 2000 oder 3000 s stand der Wert nahezu still, die Analogwertvalidierung meldete bei
+     * gesunder Anlage. */
     $z = gv_zustand();
-    $ts = isset($z['ts']) ? (int) $z['ts'] : 0;
-    return $ts > 0 ? $ts % 1000 : -1;
+    return (isset($z['zaehler']) && is_numeric($z['zaehler']) && (int) $z['zaehler'] >= 0)
+        ? ((int) $z['zaehler']) % 1000 : -1;
 }
 
 /** Alter des Abbilds in Sekunden, oder -1 wenn es keines gibt. */
@@ -1285,7 +1294,8 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
         return array(0, gv_t('TEST.M_DIENST_LAEUFT_NICHT'));
     }
 
-    $ordner = $p['datadir'] . '/befehle';
+    /* Seit 0.9.30 unter warteschlange/ (E1): befehle/ gehoert der Befehlsbruecke. */
+    $ordner = gv_warteschlange_ordner();
     if (!is_dir($ordner) && !@mkdir($ordner, 0775, true) && !is_dir($ordner)) {
         return array(0, 'Der Ordner fuer die Warteschlange liess sich nicht anlegen: ' . $ordner);
     }
@@ -2753,7 +2763,12 @@ function gv_abo_text()
     }
     $gemessen = ' <span class="sm-mono">'
               . sprintf(gv_t('MQTT.ABO_GEMESSEN'), $f) . '</span>';
-    return gv_t($f >= 2 ? 'MQTT.ABO_V2' : 'MQTT.ABO_WARNUNG') . $gemessen;
+    if ($f >= 2) {
+        return gv_t('MQTT.ABO_V2') . $gemessen;
+    }
+    /* Gateway V1: seit 0.9.30 bringt das Plugin die Abo-Datei mit (E16). */
+    list(, $da) = gv_abo_datei();
+    return gv_t($da ? 'MQTT.ABO_V1_DATEI' : 'MQTT.ABO_WARNUNG') . $gemessen;
 }
 
 
@@ -2835,6 +2850,9 @@ function gv_mqtt_themen()
         'geraetN/hex'       => 'GV_MQTT.HEX',
         'geraetN/alter'     => 'GV_MQTT.ALTER',
         'geraetN/fehl'      => 'GV_MQTT.FEHL',
+        /* Gruppe 3 / MQTT (0.9.30): Rundenzaehler des Dienstes; status/befehle sendet die Befehlsbruecke. */
+        'status/zaehler'    => 'GV_MQTT.STATUS_ZAEHLER',
+        'status/befehle'    => 'GV_MQTT.STATUS_BEFEHLE',
     );
 }
 
@@ -2858,8 +2876,10 @@ function gv_mqtt_retain($thema)
  *   Stoerung    bei erreichbar 0 gehen nur erreichbar, alter und fehl
  *               hinaus, nicht die Altwerte (M3)
  *
- * $neu ist die Geraeteliste des Abbilds, $kopf traegt ok, geraete und
- * fehler_folge.
+ * $neu ist die Geraeteliste des Abbilds, $kopf traegt ok, geraete,
+ * fehler_folge und (seit 0.9.30) zaehler - den Rundenzaehler des Dienstes, der als status/zaehler hinausgeht
+ * (Entwurf gv 2.2, E3). -1-Regel (E2): liefert eine frische Leuchte an, hell, kelvin, r, g oder b nicht, geht -1
+ * hinaus (bis 0.9.29 gar nichts - Loxone behielt den Altwert); hex ist Text und bleibt dann aus.
  */
 function gv_mqtt_paare($neu, $kopf, $cfg, $jetzt)
 {
@@ -2870,6 +2890,9 @@ function gv_mqtt_paare($neu, $kopf, $cfg, $jetzt)
         'lebt'         => 1,
         'fehler_folge' => (int) $kopf['fehler_folge'],
     );
+    if (isset($kopf['zaehler']) && (int) $kopf['zaehler'] >= 0) {
+        $paare['status/zaehler'] = (int) $kopf['zaehler'];
+    }
     foreach ($neu as $nr => $e) {
         $pfx = 'geraet' . (int) $nr . '/';
         $ts_g = isset($e['ts']) ? (int) $e['ts'] : 0;
@@ -2883,10 +2906,11 @@ function gv_mqtt_paare($neu, $kopf, $cfg, $jetzt)
         if (!$frisch) {
             continue;
         }
-        foreach (array('an', 'hell', 'kelvin', 'r', 'g', 'b', 'hex') as $f) {
-            if (isset($e[$f])) {
-                $paare[$pfx . $f] = $e[$f];
-            }
+        foreach (array('an', 'hell', 'kelvin', 'r', 'g', 'b') as $f) {
+            $paare[$pfx . $f] = isset($e[$f]) ? $e[$f] : -1;
+        }
+        if (isset($e['hex'])) {
+            $paare[$pfx . 'hex'] = $e['hex'];
         }
     }
     return $paare;
@@ -3136,20 +3160,23 @@ function gv_xml_virtual_in_http($kopf, $cmds)
  */
 function gv_status_felder($g = null)
 {
-    $kmin = ($g !== null && isset($g['kmin'])) ? (int) $g['kmin'] : 0;
-    $kmax = ($g !== null && isset($g['kmax'])) ? (int) $g['kmax'] : 10000;
+    /* $g bleibt Teil der Schnittstelle (Aufrufer reichen das Geraet weiter); die Kelvin-Grenzen haengen seit 0.9.30
+     * nicht mehr an kmin/kmax (siehe unten). */
     /* Fuenftes Element: der KACHELNAME. Der Kommentar einer Vorlage wird in
      * Loxone Config zum Anzeigenamen und muss kurz sein; die Spalte
      * "Bedeutung" im Reiter Einbindung will dagegen den ganzen Satz. Zwei
      * Abnehmer, zwei Texte, EINE Liste - gemessen am 05.09.2026: zwoelf
      * Kommentare waren Saetze, der laengste 110 Zeichen. */
     return array(
-        'AN'     => array('',  0, 1,     'GV_FELD.AN',     'GV_KACHEL.AN'),
-        'HELL'   => array('%', 0, 100,   'GV_FELD.HELL',   'GV_KACHEL.HELL'),
-        'KELVIN' => array('K', $kmin, $kmax, 'GV_FELD.KELVIN', 'GV_KACHEL.KELVIN'),
-        'R'      => array('',  0, 255,   'GV_FELD.R',      'GV_KACHEL.R'),
-        'G'      => array('',  0, 255,   'GV_FELD.G',      'GV_KACHEL.G'),
-        'B'      => array('',  0, 255,   'GV_FELD.B',      'GV_KACHEL.B'),
+        /* -1-Regel (Gruppe 3 / MQTT, 0.9.30, Entwurf gv E2): fehlt ein Wert, kommt -1 - MinVal -1 an den sechs
+         * Feldern. KELVIN -1 bis 10000 statt kmin bis kmax: unter MinVal setzt Loxone den Standardwert 0, und 0
+         * heisst hier "Farbe" (Regeln/07); kmax ist hoechstens 10000. */
+        'AN'     => array('',  -1, 1,     'GV_FELD.AN',     'GV_KACHEL.AN'),
+        'HELL'   => array('%', -1, 100,   'GV_FELD.HELL',   'GV_KACHEL.HELL'),
+        'KELVIN' => array('K', -1, 10000, 'GV_FELD.KELVIN', 'GV_KACHEL.KELVIN'),
+        'R'      => array('',  -1, 255,   'GV_FELD.R',      'GV_KACHEL.R'),
+        'G'      => array('',  -1, 255,   'GV_FELD.G',      'GV_KACHEL.G'),
+        'B'      => array('',  -1, 255,   'GV_FELD.B',      'GV_KACHEL.B'),
         'OK'     => array('',  0, 1,     'GV_FELD.OK',     'GV_KACHEL.OK'),
         /* -1 heisst "noch nie gemessen" - deshalb steht die Untergrenze auf
          * -1 und nicht auf 0. Neue Messgroessen werden hinten angehaengt,
@@ -3588,6 +3615,550 @@ function gv_vorlage_eingang_alle()
 }
 
 /* ==================================================================
+ * MQTT-Namen, Abo-Datei und Befehlsbruecke (Gruppe 3 / MQTT, 0.9.30)
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe3_gv.txt (E1-E20), ENTSCHEIDUNGEN_GRUPPE3_MQTT.md, Bauvorschrift
+ * wz_bild/GRUPPE3_BAUVORSCHRIFT.md. Werte gehen ueber das MQTT-Gateway an Virtuelle Eingaenge (KEINE Importvorlage
+ * fuer Werte, Nachtrag 2 Gruppe 1); Befehle aus Loxone nimmt die gemeinsame Befehlsbruecke an
+ * (bin/befehlsbruecke.php byte-gleich die Stammfassung Werkzeuge/gemeinsam/, linieneigen nur bin/befehle_zuordnung.php).
+ * ================================================================== */
+
+/**
+ * Der Ordner der Warteschlange (E1, Pflicht vor dem Anschluss der Bruecke). Bis 0.9.29 lag sie unter
+ * data/plugins/<ordner>/befehle/ - genau dort fuehrt die Befehlsbruecke fest ihren Zustand (befehle/zustand.json,
+ * waechter.json, mosquitto/). Der Dienst liest seine Warteschlange alle 0,2 s und loescht jede *.json darin; er haette
+ * die Dateien der Bruecke gefressen. EINE Stelle fuer gv_befehl_absetzen(), den Dienst und die Selbstpruefung.
+ */
+function gv_warteschlange_ordner()
+{
+    return gv_paths()['datadir'] . '/warteschlange';
+}
+
+/**
+ * Die Einstellungsschluessel, die erst nach einer Fassung dazukamen: fehlen sie in einer Sicherung, gilt ihre Vorgabe
+ * (Haken der Befehlsbruecke ab Werk aus) - sonst wiese das Zurueckspielen jede Sicherung bis 0.9.29 als unvollstaendig
+ * ab (Bauart mo_spaet_schluessel(), Robonect 1.1.24).
+ */
+function gv_spaet_schluessel()
+{
+    return array('befehle_mqtt_ein');
+}
+
+/**
+ * Der Name, unter dem das MQTT-Gateway ein Thema an den Miniserver gibt: Praefix/Thema, "/", "%" und Leerzeichen
+ * werden "_" (Regeln/07, Umbenennungsregel beider Gateway-Fassungen; Midea2Lox 4.5.17 am Geraet gemessen).
+ */
+function gv_mqtt_gateway_name($thema, $praefix = null)
+{
+    if ($praefix === null) {
+        $c = gv_config(false);
+        $praefix = trim((string) $c['mqtt_topic'], '/');
+    }
+    return str_replace(array('/', '%', ' '), '_', $praefix . '/' . (string) $thema);
+}
+
+/** Datenpunkte, die unter Gateway V2 "Noncached" brauchen (E6): status/befehle geht jede Minute mit gleichem Wert vom
+ *  Waechter der Bruecke - mit der Doppelt-Sperre des Gateway-Zwischenspeichers fehlte es nach einem Neustart des
+ *  Miniservers (wie Robonect E9). */
+function gv_mqtt_noncached()
+{
+    return array('status/befehle');
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 3) - EINE Liste fuer Tabelle, Hakenliste und
+ * Selbstpruefung (Entwurf gv 2.4). Reihenfolge wie im Entwurf: die Themen des Musterprojekts (Leuchte, dann Dienst),
+ * danach die uebrigen. Die Themen des Dienstes (status/..., ok, ts ...) stehen nur bei der ersten Leuchte:
+ * $mit_dienst null heisst "bei Leuchte 1"; die Oberflaeche gibt fuer die erste EINGERICHTETE Leuchte true (sie kann
+ * eine andere Nummer tragen). Rueckgabe je Zeile array('thema',
+ * 'name', 'bedeutung', 'art' zahl|text, 'bereich', 'noncached' bool, 'im_muster' bool).
+ */
+function gv_mqtt_namen($nr = 1, $mit_dienst = null)
+{
+    $nr = max(1, (int) $nr);
+    if ($mit_dienst === null) {
+        $mit_dienst = ($nr === 1);
+    }
+    $felder = gv_status_felder();
+    $f = function ($feld) use ($felder) {
+        $i = $felder[$feld];
+        return $i[1] . "\u{2026}" . $i[2] . ($i[0] !== '' ? ' ' . $i[0] : '');
+    };
+    /* thema (geraetN = diese Leuchte), Bedeutung, Bereich, Text?, im Musterprojekt? (E5) */
+    $zeilen = array(
+        array('geraetN/erreichbar', 'GV_MQTT.ERREICHBAR', '0/1', false, true),
+        array('geraetN/alter', 'GV_MQTT.ALTER', $f('ALTER'), false, true),
+        array('geraetN/fehl', 'GV_MQTT.FEHL', $f('FEHL'), false, true),
+        array('geraetN/an', 'GV_MQTT.AN', $f('AN'), false, true),
+        array('geraetN/hell', 'GV_MQTT.HELL', $f('HELL'), false, true),
+        array('geraetN/kelvin', 'GV_MQTT.KELVIN', $f('KELVIN'), false, true),
+        array('geraetN/r', 'GV_MQTT.R', $f('R'), false, true),
+        array('geraetN/g', 'GV_MQTT.G', $f('G'), false, true),
+        array('geraetN/b', 'GV_MQTT.B', $f('B'), false, true),
+        array('status/zaehler', 'GV_MQTT.STATUS_ZAEHLER', "0\u{2026}999", false, true),
+        array('status/befehle', 'GV_MQTT.STATUS_BEFEHLE', "-1\u{2026}1", false, true),
+        array('ok', 'GV_MQTT.OK', '0/1', false, false),
+        array('geraete', 'GV_MQTT.GERAETE', "0\u{2026}99", false, false),
+        array('ts', 'GV_MQTT.TS', 'Unix s', false, false),
+        array('lebt', 'GV_MQTT.LEBT', '1', false, false),
+        array('fehler_folge', 'GV_MQTT.FEHLER_FOLGE', "0\u{2026}", false, false),
+        array('geraetN/name', 'GV_MQTT.NAME', '', true, false),
+        array('geraetN/hex', 'GV_MQTT.HEX', 'RRGGBB', true, false),
+    );
+    $nc = gv_mqtt_noncached();
+    $aus = array();
+    foreach ($zeilen as $z) {
+        $je = strpos($z[0], 'geraetN/') === 0;
+        if (!$mit_dienst && !$je) {
+            continue;
+        }
+        $t = $je ? 'geraet' . $nr . '/' . substr($z[0], 8) : $z[0];
+        $aus[] = array('thema' => $t, 'name' => gv_mqtt_gateway_name($t), 'bedeutung' => gv_t($z[1]),
+                       'art' => $z[3] ? 'text' : 'zahl', 'bereich' => $z[2],
+                       'noncached' => in_array($z[0], $nc, true), 'im_muster' => $z[4]);
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (E6): die Zeilen der Namenstabelle mit im_muster - Leuchte 1: 11 (alle Zahl), davon
+ *  1 Noncached; je weitere Leuchte 9. Rueckgabe je Zeile array(thema voll, Name in Loxone, Bedeutung, art, noncached). */
+function gv_mqtt_hakenliste($nr = 1, $mit_dienst = null)
+{
+    $c = gv_config(false);
+    $p = trim((string) $c['mqtt_topic'], '/');
+    $aus = array();
+    foreach (gv_mqtt_namen($nr, $mit_dienst) as $z) {
+        if ($z['im_muster']) {
+            $aus[] = array($p . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['art'], $z['noncached']);
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Stehen unter Gateway V2 die Haken? Gelesen wird config/system/subscriptions.json (Subscriptions[].Id je Thema,
+ * Noncached; Form wie Robonect 1.1.24, Spotpreis aWATTar 1.2.38). Rueckgabe array(1|0|2, Text): 1 alle Datenpunkte
+ * der Hakenliste (alle eingerichteten Leuchten) angehakt und die Noncached-Themen so markiert; 0 es fehlt etwas;
+ * 2 nicht feststellbar oder Gateway V1.
+ */
+function gv_mqtt_v2_haken_lage()
+{
+    $m = gv_mqtt_zustand();
+    $p = gv_paths();
+    if ((int) $m['fassung'] === 0 || $p['home'] === '') {
+        return array(2, gv_t('TEST.A_V2_UNKLAR'));
+    }
+    if ((int) $m['fassung'] < 2) {
+        return array(2, gv_t('TEST.A_V2_V1'));
+    }
+    $d = json_decode((string) @file_get_contents($p['home'] . '/config/system/subscriptions.json'), true);
+    if (!is_array($d)) {
+        return array(2, gv_t('TEST.A_V2_UNKLAR'));
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($d[$s]) && is_array($d[$s])) {
+            $liste = $d[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    $nummern = gv_geraete() ? array_keys(gv_geraete()) : array(1);
+    $soll = array();
+    foreach ($nummern as $i => $n) {
+        /* Lebenszeichen nur einmal - bei der ersten eingerichteten Leuchte */
+        $soll = array_merge($soll, gv_mqtt_hakenliste($n, $i === 0));
+    }
+    $fehlt = array();
+    $ohne = array();
+    $n_nc = 0;
+    foreach ($soll as $z) {
+        if ($z[4]) {
+            $n_nc++;
+        }
+        if (!array_key_exists($z[0], $abo)) {
+            $fehlt[] = $z[0];
+        } elseif ($z[4] && !$abo[$z[0]]) {
+            $ohne[] = $z[0];
+        }
+    }
+    if (!$fehlt && !$ohne) {
+        return array(1, sprintf(gv_t('TEST.A_V2_OK'), count($soll), $n_nc));
+    }
+    return array(0, sprintf(gv_t('TEST.A_V2_FEHLT'), $fehlt ? gv_e(implode(', ', $fehlt)) : '-',
+        $ohne ? gv_e(implode(', ', $ohne)) : '-'));
+}
+
+/**
+ * Selbstpruefung "Namenstabelle gegen den Sendecode" (Eichung wie Abfuhrkalender B58): jeder Name der Tabelle ist ein
+ * Name, unter dem das Gateway sendet, und jedes gesendete Thema steht in der Tabelle. Gesendet = gv_mqtt_paare() fuer
+ * eine Leuchte, die jeden Wert liefert, dazu status/befehle (bb_status_senden() der Bruecke).
+ * Rueckgabe array(1|0, Text).
+ */
+function gv_mqtt_namen_probe()
+{
+    $jetzt = time();
+    $probe = array(1 => array('name' => 'Probe', 'art' => 'lan', 'ts' => $jetzt, 'ok' => 1, 'fehl' => 0, 'an' => 1,
+        'hell' => 50, 'kelvin' => 3000, 'r' => 1, 'g' => 2, 'b' => 3, 'hex' => '010203'));
+    $gesendet = array_keys(gv_mqtt_paare($probe, array('ok' => 1, 'geraete' => 1, 'fehler_folge' => 0, 'zaehler' => 0),
+        gv_vorgaben(), $jetzt));
+    $gesendet[] = 'status/befehle';
+    $soll = array();
+    foreach ($gesendet as $t) {
+        $soll[] = gv_mqtt_gateway_name($t);
+    }
+    $ist = array();
+    foreach (gv_mqtt_namen(1) as $z) {
+        $ist[] = $z['name'];
+    }
+    $nur_tabelle = array_values(array_diff($ist, $soll));
+    $nur_gesendet = array_values(array_diff($soll, $ist));
+    if ($nur_tabelle || $nur_gesendet) {
+        return array(0, sprintf(gv_t('TEST.A_NAMEN_FEHL'), $nur_tabelle ? gv_e(implode(', ', $nur_tabelle)) : '-',
+            $nur_gesendet ? gv_e(implode(', ', $nur_gesendet)) : '-'));
+    }
+    return array(1, sprintf(gv_t('TEST.A_NAMEN_OK'), count($ist)));
+}
+
+/**
+ * Die Abo-Datei fuer Gateway V1 (E16, Bauart Robonect mo_abo_datei(), Ferien fer_abo_datei()):
+ * config/plugins/<ordner>/mqtt_subscriptions.cfg mit "<praefix>/#". Das Archiv bringt sie mit "govee/#"; beim
+ * Speichern des Reiters MQTT und in postinstall.sh wird sie auf das eingestellte Praefix nachgefuehrt. Ob Gateway V2
+ * die Datei liest, ist nicht gemessen. Geschrieben wird nur in einer Anlage, nie vom unangemeldeten Endpunkt.
+ * Rueckgabe array(pfad, steht das Abo darin?).
+ */
+function gv_abo_datei($schreiben = false)
+{
+    $p = gv_paths();
+    $c = gv_config(false);
+    $pfad = $p['configdir'] . '/mqtt_subscriptions.cfg';
+    $soll = trim((string) $c['mqtt_topic'], '/') . '/#';
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', preg_split('/\r?\n/', $roh)), true);
+    if ($schreiben && $p['home'] !== '' && $roh !== $soll . "\n" && is_dir($p['configdir'])
+        && preg_match(gv_regeln()['topic'], trim($soll, '/#'))) {
+        $tmp = $pfad . '.tmp.' . getmypid();
+        if (@file_put_contents($tmp, $soll . "\n") === strlen($soll) + 1 && @chmod($tmp, 0644) && @rename($tmp, $pfad)) {
+            gv_log('MQTT: Abo-Datei des Gateways gesetzt: ' . $soll . ' (' . $pfad . ').');
+            $da = true;
+        } else {
+            @unlink($tmp);
+            gv_log_gebremst('abo_datei', 'MQTT: die Abo-Datei ' . $pfad . ' liess sich nicht schreiben - unter Gateway V1 '
+                . 'muss das Abo ' . $soll . ' von Hand eingetragen werden.');
+        }
+    }
+    return array($pfad, $da);
+}
+
+/* ---------------- Befehlsbruecke ----------------
+ * Die Bruecke ruft gv_befehl_annehmen() - dieselbe Funktion wie der Endpunkt webfrontend/html/index.php, mit
+ * Quelle 'mqtt' (Entwurf gv 3.2). Die Token-Pruefung bleibt im Endpunkt; auf dem MQTT-Weg ersetzen sie die Anmeldung
+ * am Broker und die beiden Haken ("Befehle ueber MQTT annehmen", "Schreibende Befehle zulassen"). */
+
+/** Ist der Befehl wegen "Schreibende Befehle zulassen" gesperrt? EINE Stelle fuer Endpunkt und Bruecke. */
+function gv_befehl_gesperrt($aktion, $cfg)
+{
+    return !in_array((string) $aktion, array('abruf', 'suche'), true) && empty($cfg['steuerung_ein']);
+}
+
+/**
+ * Einen schaltenden Befehl annehmen und an den Dienst geben - aus webfrontend/html/index.php herausgezogen (bis 0.9.29
+ * stand der Rumpf dort, Z. 252-405 nach der Parameterpruefung), Reihenfolge und Wirkung unveraendert: Haken
+ * "Schreibende Befehle zulassen" (ausser abruf/suche) -> Dienst laeuft -> Befehlsbremse (Merker, gleicher Wert binnen
+ * 60 s) -> gv_befehl_absetzen() -> Bremse merken bei 1. Die Bremse fuer denselben Wert gilt fuer beide Wege gemeinsam.
+ * $quelle 'mqtt' (Befehlsbruecke) traegt nur 'quelle' => 'mqtt' in den Auftrag, damit das Protokoll des Dienstes
+ * "(ueber MQTT)" schreibt; der HTTP-Weg legt denselben Auftrag ab wie bisher.
+ * Rueckgabe array('ok' => 0|1|2, 'grund' => ''|STEUERUNG_AUS|DIENST_LAEUFT_NICHT|BREMSE_MERKER, 'http' => Code,
+ * 'unveraendert' => 0|1, 'seit' => s, 'meldung' => Text des Dienstes).
+ */
+function gv_befehl_annehmen(array $befehl, $cfg, $quelle = 'http')
+{
+    $aktion = isset($befehl['aktion']) ? (string) $befehl['aktion'] : '';
+    $r = array('ok' => 0, 'grund' => '', 'http' => 200, 'unveraendert' => 0, 'seit' => 0, 'meldung' => '');
+    if (gv_befehl_gesperrt($aktion, $cfg)) {
+        $r['grund'] = 'STEUERUNG_AUS';
+        $r['http'] = 403;
+        return $r;
+    }
+    if (!gv_dienst_laeuft()) {
+        $r['grund'] = 'DIENST_LAEUFT_NICHT';
+        $r['http'] = 503;
+        return $r;
+    }
+    $bremse = gv_bremse_pruefen($befehl, $cfg);
+    if ($bremse['stand'] === 'merker') {
+        gv_log_gebremst('bremse_merker', 'Die Merkerdatei der Befehlsbremse unter '
+            . gv_paths()['datadir'] . ' laesst sich nicht oeffnen - ein, aus, hell, kelvin und farbe '
+            . 'werden mit 503 abgewiesen, bis das behoben ist. Pruefen: Platz und Eigentuemer (loxberry).');
+        $r['grund'] = 'BREMSE_MERKER';
+        $r['http'] = 503;
+        return $r;
+    }
+    if ($bremse['stand'] === 'gleich') {
+        $r['ok'] = 1;
+        $r['unveraendert'] = 1;
+        $r['seit'] = (int) $bremse['seit'];
+        return $r;
+    }
+    if ($quelle === 'mqtt') {
+        $befehl['quelle'] = 'mqtt';
+    }
+    list($erg, $meldung) = gv_befehl_absetzen($befehl);
+    if ($erg === 0) {
+        $r['http'] = 500;
+    }
+    /* Gemerkt wird nur, was der Dienst bestaetigt hat (1). Scheitert das
+     * Schreiben, wirkt der Befehl trotzdem - aber das steht im Protokoll. */
+    if ($erg === 1 && !gv_bremse_merken($befehl, $cfg)) {
+        gv_log_gebremst('bremse_schreiben', 'Die Merkerdatei der Befehlsbremse liess sich nicht schreiben - '
+            . 'die Bremse erkennt den letzten Befehl nicht.');
+    }
+    $r['ok'] = (int) $erg;
+    $r['meldung'] = (string) $meldung;
+    return $r;
+}
+
+/** Ergebnis von gv_befehl_annehmen() fuer die Bruecke: array(ok, Grund der Quittung). UNVERAENDERT=1 ist angenommen;
+ *  2 (eingereiht, der Dienst antwortete nicht in der Wartezeit) heisst OHNE_ANTWORT - der Befehl kann noch wirken
+ *  (E11); eine Absage des Dienstes ohne Grundwort heisst ABGELEHNT, die Meldung steht im Protokoll des Dienstes. */
+function gv_befehl_ergebnis(array $r)
+{
+    if ((int) $r['ok'] === 1) {
+        return array(true, '');
+    }
+    if ((int) $r['ok'] === 2) {
+        return array(false, 'OHNE_ANTWORT');
+    }
+    return array(false, $r['grund'] !== '' ? (string) $r['grund'] : 'ABGELEHNT');
+}
+
+/** Einstellungen fuer die Zuordnung (Entwurf gemeinsam 2.5): Praefix aus mqtt_topic, annehmen = Haken "Befehle ueber
+ *  MQTT annehmen" UND MQTT an, eingreifend = der vorhandene zweite Haken "Schreibende Befehle zulassen" (E7). */
+function gv_befehle_einstellungen()
+{
+    $c = gv_config(false);
+    return array('praefix' => trim((string) $c['mqtt_topic'], '/'),
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && !empty($c['mqtt_ein']),
+                 'eingreifend' => !empty($c['steuerung_ein']),
+                 'mqtt_ein' => !empty($c['mqtt_ein']));
+}
+
+/**
+ * Die Befehlsbruecke als Bibliothek laden (BB_NUR_LADEN). Installiert liegt sie unter bin/plugins/<ordner>/, in einem
+ * Arbeitsordner unter bin/ neben webfrontend/. Rueckgabe true, wenn bb_waechter() danach da ist.
+ */
+function gv_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $p = gv_paths();
+    $kand = array();
+    if ($p['home'] !== '') {
+        $kand[] = $p['bindir'] . '/befehlsbruecke.php';
+    }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) {
+            if (!defined('BB_NUR_LADEN')) {
+                define('BB_NUR_LADEN', true);
+            }
+            require_once $k;
+            return function_exists('bb_waechter');
+        }
+    }
+    return false;
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter, Vorlage und Musterprojekt).
+ *  Rueckgabe array(Liste oder null, Fehlertext). */
+function gv_bruecke_liste()
+{
+    if (!gv_bruecke_laden()) {
+        return array(null, gv_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) {
+        return array(null, $fehler);
+    }
+    $GLOBALS['bb_zuordnung'] = $z;
+    list($fehl) = bb_zuordnung_pruefen($z);
+    if ($fehl) {
+        return array(null, $fehl[0]);
+    }
+    return array(bb_liste($z, bb_einstellungen($z)), '');
+}
+
+/**
+ * Die Bruecke sofort schalten (Reiter MQTT, nach dem Speichern; Bauart fer_bruecke_schalten()). Soll sie laufen:
+ * befehlsbruecke.sh start (startet nur nach --soll, nie als root, nie waehrend eines Updates, nie zweimal). Soll sie
+ * nicht laufen und laeuft sie: stop. Grund: der Waechter startet hoechstens alle 600 s neu (Neustart-Bremse der
+ * Stammfassung). Rueckgabe array(rc oder null = nichts zu tun, 'start'|'stop'|'', Ausgabe).
+ */
+function gv_bruecke_schalten($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = gv_config(false);
+    }
+    if (!gv_bruecke_laden()) {
+        return array(1, '', gv_t('BEFEHL.T_NICHT_DA'));
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array(null, '', '');
+    }
+    if (!empty($cfg['befehle_mqtt_ein']) && !empty($cfg['mqtt_ein'])) {
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array($rc, 'start', $aus);
+    }
+    if (!bb_dienste()) {
+        return array(null, '', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array($rc, 'stop', $aus);
+}
+
+/**
+ * Lage der Bruecke fuer den Reiter Test und die Selbstpruefung (Bauart fer_bruecke_lage()). Gemessen wird das
+ * Erzeugnis wie im Waechter: Dienst laeuft (argumentweise), zustand.json juenger als 180 s, Abo steht. Rueckgabe
+ * array(true|false|null, Text) - null heisst "aus" (Haken) und zaehlt nicht als bestanden.
+ */
+function gv_bruecke_lage()
+{
+    if (!gv_bruecke_laden()) {
+        return array(false, gv_t('BEFEHL.T_NICHT_DA'));
+    }
+    list($soll, $grund) = bb_soll_ermitteln();
+    if ($soll === 1) {
+        return array(null, gv_t('BEFEHL.T_AUS'));
+    }
+    if ($soll !== 0) {
+        return array(false, sprintf(gv_t('BEFEHL.T_DEFEKT'), $grund));
+    }
+    $zu = bb_zustand_lesen();
+    $pids = bb_dienste();
+    $alter = (is_array($zu) && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if ($pids && $alter !== null && $alter <= BB_WACHE_GRENZE && !empty($zu['abo'])) {
+        $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+        $txt = sprintf(gv_t('BEFEHL.T_LAEUFT'), implode(' ', $pids),
+            is_string($zu['abo']) ? $zu['abo'] : trim((string) gv_config(false)['mqtt_topic'], '/') . '/befehl/#',
+            isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0);
+        $lz = isset($zu['letzter']) && is_array($zu['letzter']) ? $zu['letzter'] : null;
+        if ($lz !== null && isset($lz['name'])) {
+            $txt .= ' ' . sprintf(gv_t('BEFEHL.T_LETZTER'), (string) $lz['name'],
+                isset($lz['ergebnis']) ? (string) $lz['ergebnis'] : '-',
+                isset($lz['zeit']) ? max(0, time() - (int) $lz['zeit']) : 0);
+        } else {
+            $txt .= ' ' . gv_t('BEFEHL.T_KEINER');
+        }
+        return array(true, $txt);
+    }
+    $wie = !$pids ? 'kein Dienst' : ($alter === null ? 'kein Zustand' : ($alter > BB_WACHE_GRENZE
+        ? 'Zustand ' . $alter . ' s alt' : 'ohne Abo' . (is_array($zu) && !empty($zu['fehler']) ? ': ' . $zu['fehler'] : '')));
+    return array(false, sprintf(gv_t('BEFEHL.T_STEHT'), $wie));
+}
+
+/** Die Zeilen von befehlsbruecke.php --pruefen (Reiter Test), im Prozess. */
+function gv_bruecke_pruefzeilen()
+{
+    if (!gv_bruecke_laden()) {
+        return array();
+    }
+    ob_start();
+    bb_pruefen();
+    $aus = (string) ob_get_clean();
+    return array_values(array_filter(explode("\n", $aus), 'strlen'));
+}
+
+/**
+ * Vorlage "Govee MQTT-Befehle" je Leuchte (Entwurf gv 3.3, E18): eigener Ausgang an den UDP-Eingang des
+ * MQTT-Gateways /dev/udp/<LoxBerry>/<Udpinport>; je Befehl der Zuordnung "Govee <Aktion> Geraet <N> (MQTT)" mit
+ * "publish <praefix>/befehl/geraet<N>/<name> <v.0>" (schalten: Ein 1, Aus 0; abruf fest 1). bb_vorlage() erzeugt
+ * Musterbefehle nicht (Brueckenbericht 6), deshalb baut die Linie sie selbst aus bb_liste() - EINE Quelle fuer Titel,
+ * Themen und Art. Titel fest deutsch (Sprachregel), Kommentare aus der Sprachdatei. Szene nur ohne Cloud, Balken nur mit
+ * Pixelzahl und ohne Cloud (wie die Vorlage ueber den LoxBerry, U9). Rueckgabe array(Name, Inhalt).
+ */
+function gv_vorlage_mqtt_befehle($nummer = 1)
+{
+    $g = gv_geraet($nummer);
+    if ($g === null) {
+        return array('', '');
+    }
+    list($l) = gv_bruecke_liste();
+    if ($l === null) {
+        return array('', '');
+    }
+    $host = isset($_SERVER['HTTP_HOST']) && $_SERVER['HTTP_HOST'] !== ''
+        ? preg_replace('/[^A-Za-z0-9\.\-]/', '', preg_replace('/:[0-9]+$/', '', (string) $_SERVER['HTTP_HOST']))
+        : (gethostname() ?: 'loxberry');
+    $port = (int) gv_mqtt_zustand()['udpport'];
+    if ($port <= 0) {
+        $port = 11884;
+    }
+    $cmds = array();
+    foreach ($l['befehle'] as $b) {
+        $name = (string) $b['name'];
+        if (strpos($name, '{geraet}/') === 0) {
+            $kurz = substr($name, 9);
+            if ($kurz === 'szene' && $g['art'] === 'cloud') {
+                continue;
+            }
+            if ($kurz === 'balken' && ((int) $g['pixel'] < 1 || $g['art'] === 'cloud')) {
+                continue;
+            }
+            $thema = str_replace('{geraet}', 'geraet' . (int) $nummer, $b['thema']);
+            $titel = preg_replace('/ \(MQTT\)\z/', " Ger\u{e4}t " . (int) $nummer . ' (MQTT)', $b['titel']);
+        } else {
+            $thema = $b['thema'];
+            $titel = $b['titel'];
+        }
+        $c = array('title' => $titel, 'comment' => gv_klartext($b['kachel']));
+        if ($b['art'] === 'schalter') {
+            $c['on'] = 'publish ' . $thema . ' 1';
+            $c['off'] = 'publish ' . $thema . ' 0';
+            $c['analog'] = false;
+        } elseif ($b['art'] === 'puls') {
+            $c['on'] = 'publish ' . $thema . ' 1';
+            $c['analog'] = false;
+        } else {
+            $c['on'] = 'publish ' . $thema . ' <v.0>';
+            $c['analog'] = true;
+        }
+        $cmds[] = $c;
+    }
+    return array(
+        'VQ_GOVEE_' . preg_replace('/[^A-Za-z0-9_]/', '_', $g['name']) . '_MQTT.xml',
+        gv_xml_virtual_out(array(
+            'title'   => 'Govee MQTT-Befehle',
+            'comment' => gv_klartext('LOX.EB_S5_VORLAGE'),
+            'address' => '/dev/udp/' . $host . '/' . $port,
+        ), $cmds),
+    );
+}
+
+/* ==================================================================
  * Sprache (Pflicht: Deutsch und Englisch)
  *
  * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
@@ -3735,7 +4306,8 @@ function gv_sicherung_lesen($roh, &$namen = null)
      * darf fehlen. */
     $fehlend = array();
     foreach (array_keys(gv_vorgaben()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
+        /* gv_spaet_schluessel(): erst ab 0.9.30 - fehlt er in einer aelteren Sicherung, gilt die Vorgabe. */
+        if (!array_key_exists($fk, $daten) && !in_array($fk, gv_spaet_schluessel(), true)) {
             $fehlend[] = $fk;
         }
     }
@@ -3768,7 +4340,7 @@ function gv_regeln()
         ),
         'zeile'     => array('pixel' => array(0, 200), 'kmin' => array(1000, 10000),
                              'kmax' => array(1000, 10000)),
-        'schalter'  => array('mqtt_ein', 'steuerung_ein', 'cloud_ein', 'pt_frei'),
+        'schalter'  => array('mqtt_ein', 'steuerung_ein', 'cloud_ein', 'pt_frei', 'befehle_mqtt_ein'),
     );
 }
 
@@ -4208,7 +4780,7 @@ function gv_eingabe_felder($form)
         );
     }
     if ($form === 'mqtt') {
-        return array('text' => array('mqtt_topic'), 'liste' => array(), 'haken' => array('mqtt_ein'));
+        return array('text' => array('mqtt_topic'), 'liste' => array(), 'haken' => array('mqtt_ein', 'befehle_mqtt_ein'));
     }
     return null;
 }

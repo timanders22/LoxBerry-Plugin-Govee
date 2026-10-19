@@ -127,7 +127,10 @@ ini_set('log_errors', '1');
 ini_set('display_errors', '0');
 ini_set('error_log', $gv_p['log']);
 
-@mkdir($gv_p['datadir'] . '/befehle', 0775, true);
+/* Seit 0.9.30 (Gruppe 3 / MQTT, E1): die Warteschlange liegt unter warteschlange/ - befehle/ gehoert der
+ * Befehlsbruecke (zustand.json, waechter.json, mosquitto/), und dieser Dienst loescht jede *.json seiner
+ * Warteschlange. */
+@mkdir(gv_warteschlange_ordner(), 0775, true);
 @mkdir($gv_p['datadir'] . '/antworten', 0775, true);
 
 /* Nur EIN Dienst. Ohne diese Sperre banden zwei Dienste denselben
@@ -179,6 +182,7 @@ if ($gv_horcher === null) {
 }
 gv_log('Antwortport ' . GV_PORT_ANTWORT . ' geoeffnet.');
 gv_alte_befehle_verwerfen();
+gv_alte_warteschlange_raeumen();
 
 /**
  * Das Lebenszeichen - und die letzte Stoerung.
@@ -188,7 +192,7 @@ gv_alte_befehle_verwerfen();
  * Ursache eines Absturzes verschwunden, bevor jemand hinsah. Quittiert wird
  * sie in der Oberflaeche.
  */
-function gv_zustand_schreiben($fehler = '')
+function gv_zustand_schreiben($fehler = '', $runde = false)
 {
     $pfad = gv_paths()['datadir'] . '/zustand.json';
     $alt = gv_json_lesen($pfad);
@@ -196,6 +200,14 @@ function gv_zustand_schreiben($fehler = '')
         'ts'  => time(),
         'pid' => getmypid(),
     );
+    /* Rundenzaehler 0..999 (seit 0.9.30, Entwurf gv 2.2, E3): je LAN-Runde eins weiter, umlaufend; gv_zaehler()
+     * liest ihn fuer HTTP (ZAEHLER) und MQTT (status/zaehler). Ohne Runde bleibt er stehen. */
+    $z = (isset($alt['zaehler']) && is_numeric($alt['zaehler'])) ? (int) $alt['zaehler'] : -1;
+    if ($runde) {
+        $neu['zaehler'] = $z < 0 ? 0 : ($z + 1) % 1000;
+    } elseif ($z >= 0) {
+        $neu['zaehler'] = $z;
+    }
     if ((string) $fehler !== '') {
         $neu['fehler'] = (string) $fehler;
         $neu['fehler_ts'] = time();
@@ -436,7 +448,7 @@ function gv_abbild_schreiben($treffer, $gefragt)
         $jetzt = time();
         $praefix = trim((string) $cfg['mqtt_topic'], '/');
         $paare = gv_mqtt_paare($neu, array('ok' => $ok_neu, 'geraete' => count($neu),
-            'fehler_folge' => $fehler_folge), $cfg, $jetzt);
+            'fehler_folge' => $fehler_folge, 'zaehler' => gv_zaehler()), $cfg, $jetzt);
         list($weg_paare, $weg_leeren, $weg_nummern) = gv_mqtt_entfernte($neu, $cfg);
         if (gv_mqtt_runde_senden($paare, $weg_paare, $weg_leeren, $praefix, $jetzt) && $weg_nummern) {
             gv_mqtt_entfernte($neu, $cfg, $weg_nummern);
@@ -758,7 +770,7 @@ function gv_befehl_cloud($g, $aktion, $b)
  */
 function gv_alte_befehle_verwerfen()
 {
-    $ordner = gv_paths()['datadir'] . '/befehle';
+    $ordner = gv_warteschlange_ordner();
     $jetzt = time();
     clearstatcache();
     foreach (glob($ordner . '/*.json') ?: array() as $datei) {
@@ -778,10 +790,32 @@ function gv_alte_befehle_verwerfen()
     }
 }
 
+/**
+ * Upgrade von 0.9.29 und frueher (E1): Auftraege im alten Ordner befehle/ werden VERWORFEN, nicht uebernommen.
+ * Gruende: purge_installation raeumt den Datenordner beim Upgrade ohnehin ab (Regeln/06), jeder Auftrag ist nach
+ * 60 s veraltet (gv_alte_befehle_verwerfen()), und wer ihn einreihte, wartete hoechstens 10 s. Geraeumt werden
+ * nur Dateien in der Form, die gv_befehl_absetzen() bis 0.9.29 schrieb (16 Hexzeichen .json bzw. .json.tmp) -
+ * zustand.json, waechter.json, dienst.lock und mosquitto/ der Befehlsbruecke bleiben unberuehrt. Bei jedem Start;
+ * nach dem ersten findet es nichts mehr.
+ */
+function gv_alte_warteschlange_raeumen()
+{
+    $n = 0;
+    foreach (glob(gv_paths()['datadir'] . '/befehle/*') ?: array() as $datei) {
+        if (is_file($datei) && preg_match('/^[0-9a-f]{16}\.json(\.tmp)?$/', basename($datei)) && @unlink($datei)) {
+            $n++;
+        }
+    }
+    if ($n > 0) {
+        gv_log('Alte Warteschlange befehle/ (bis 0.9.29): ' . $n . ' Auftrag/Auftraege VERWORFEN, nicht ausgefuehrt - '
+            . 'seit 0.9.30 liegt die Warteschlange unter warteschlange/.');
+    }
+}
+
 /** Die Warteschlange abarbeiten. Harte Obergrenze je Durchlauf. */
 function gv_warteschlange($horcher)
 {
-    $ordner = gv_paths()['datadir'] . '/befehle';
+    $ordner = gv_warteschlange_ordner();
     $dateien = @glob($ordner . '/*.json');
     if (!$dateien) {
         return;
@@ -804,6 +838,7 @@ function gv_warteschlange($horcher)
         list($ok, $meldung) = gv_befehl_ausfuehren($b, $horcher);
         gv_antwort($kennung, $ok, $meldung);
         gv_log('Befehl ' . (isset($b['aktion']) ? $b['aktion'] : '?')
+            . ((isset($b['quelle']) && $b['quelle'] === 'mqtt') ? ' (ueber MQTT)' : '')
             . ' -> ' . ($ok ? 'ok' : 'abgelehnt') . ': ' . $meldung);
     }
 }
@@ -884,11 +919,13 @@ do {
         }
     }
 
+    /* Zuerst das Lebenszeichen, dann das Abbild (seit 0.9.30, Entwurf gv 2.2): sonst ginge ueber MQTT immer der
+     * Rundenzaehler der Vorrunde hinaus. Wirkung auf zustand.json und Abbild keine - beides in derselben Schleife. */
+    if ($gv_lan_lief) {
+        gv_zustand_schreiben('', true);
+    }
     if ($gv_lan_lief || $gv_gefragt) {
         gv_abbild_schreiben($gv_treffer, $gv_gefragt);
-    }
-    if ($gv_lan_lief) {
-        gv_zustand_schreiben('');
     }
 
     gv_warteschlange($gv_horcher);

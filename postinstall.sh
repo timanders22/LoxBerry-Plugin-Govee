@@ -61,7 +61,9 @@ PDATA="$BASE/data/plugins/$PFOLDER"
 PLOG="$BASE/log/plugins/$PFOLDER"
 PCONFIG="$BASE/config/plugins/$PFOLDER"
 
-mkdir -p "$PDATA/befehle" "$PDATA/antworten" "$PLOG" "$PCONFIG" || {
+# Seit 0.9.30 liegt die Warteschlange unter warteschlange/ (Gruppe 3 / MQTT, E1); befehle/ legt die
+# Befehlsbruecke selbst an.
+mkdir -p "$PDATA/warteschlange" "$PDATA/antworten" "$PLOG" "$PCONFIG" || {
     echo "<FAIL> Ordner konnten nicht angelegt werden."
     exit 1
 }
@@ -276,6 +278,21 @@ for gv_bk in "$BK" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json"; do
     fi
 done
 
+# ---------- Abo-Datei fuer MQTT-Gateway V1 (Gruppe 3 / MQTT, 0.9.30, E16) ----------
+# Das Archiv bringt config/mqtt_subscriptions.cfg mit "govee/#". Traegt die (zurueckgespielte) Konfiguration
+# ein anderes Praefix, fuehrt gv_abo_datei() der installierten Bibliothek die Datei nach. Ohne php oder
+# Bibliothek bleibt sie, wie sie kam. Die Befehlsbruecke startet hier nicht: bei einer Neuinstallation ist ihr
+# Haken aus, bei einem Upgrade startet sie postupgrade.sh nach dem Entfernen der Marke.
+GV_LIB="$BASE/webfrontend/html/plugins/$PFOLDER/gv_lib.php"
+if [ -f "$GV_LIB" ] && command -v php >/dev/null 2>&1; then
+    GV_ABO=$(env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" php -d display_errors=0 -r 'require $argv[1];
+        list($p, $da) = gv_abo_datei(true); echo $da ? "ja" : "nein";' "$GV_LIB" 2>/dev/null)
+    if [ "$GV_ABO" = "ja" ]; then
+        echo "<OK> Abo-Datei des MQTT-Gateways passt zum Themenpraefix."
+    else
+        echo "<INFO> Abo-Datei des MQTT-Gateways nicht nachgefuehrt - unter Gateway V1 das Abo im Reiter MQTT pruefen."
+    fi
+fi
 echo "<OK> Installation abgeschlossen."
 # Die Erstanleitung nur, wenn noch kein Geraet eingerichtet ist - entschieden
 # am INHALT der Konfiguration nach dem Zurueckspielen, nicht an einer Marke.

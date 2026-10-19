@@ -132,6 +132,9 @@ if ($gv_post && isset($_POST['vorlage'])) {
         list($gv_name, $gv_inhalt) = gv_vorlage_lox($gv_nr);
     } elseif ($gv_art === 'eingang_alle') {
         list($gv_name, $gv_inhalt) = gv_vorlage_eingang_alle();
+    } elseif ($gv_art === 'mqtt_befehle') {
+        /* Gruppe 3 / MQTT (0.9.30): Ausgang "Govee MQTT-Befehle" je Leuchte (Entwurf gv 3.3, E18). */
+        list($gv_name, $gv_inhalt) = gv_vorlage_mqtt_befehle($gv_nr);
     }
     if ($gv_inhalt === '') {
         $gv_fehler[] = gv_t('LOX.FEHLER_VORLAGE');
@@ -594,6 +597,8 @@ if ($gv_post && isset($_POST['save_mqtt'])) {
     $gv_n0 = count($gv_fehler);   // Entscheidung 16 (MQTT)
     $gv_bean = array();           // X-2: beanstandete Felder
     $gv_mcfg['mqtt_ein'] = isset($_POST['mqtt_ein']) ? 1 : 0;
+    /* Gruppe 3 / MQTT (0.9.30): Haken der Befehlsbruecke, ab Werk aus (gv_vorgaben). */
+    $gv_mcfg['befehle_mqtt_ein'] = isset($_POST['befehle_mqtt_ein']) ? 1 : 0;
     /* Nicht mehr still saeubern (Entscheidung 16): bis 0.9.24 wurden
      * Anfuehrungs- und Steuerzeichen entfernt, "go'vee" wurde "govee".
      * Jetzt weist das Muster sie ab. */
@@ -616,6 +621,28 @@ if ($gv_post && isset($_POST['save_mqtt'])) {
         $gv_eingaben = gv_eingaben_sammeln('mqtt', $gv_bean);   // X-2
     } elseif (gv_config_speichern($gv_mcfg)) {
         $gv_meldungen[] = gv_t('EINST.GESPEICHERT');
+        /* Gruppe 3 / MQTT (0.9.30): Abo-Datei fuer Gateway V1 auf das Praefix nachfuehren (E16) und die Befehlsbruecke
+         * sofort schalten - der Waechter startet nach einem Start hoechstens alle 600 s neu. */
+        list($gv_ap, $gv_ad) = gv_abo_datei(true);
+        if (!$gv_ad) {
+            $gv_hinweise[] = sprintf(gv_t('MQTT.M_ABO_DATEI_FEHL'), $gv_ap);
+        }
+        list($gv_brc, $gv_bwas, $gv_baus) = gv_bruecke_schalten($gv_mcfg);
+        if ($gv_bwas === 'start') {
+            if ($gv_brc === 0) {
+                if (stripos($gv_baus, 'gestartet') !== false || stripos($gv_baus, 'laeuft') !== false) {
+                    $gv_meldungen[] = gv_t('BEFEHL.M_EIN');
+                }
+            } else {
+                $gv_fehler[] = sprintf(gv_t('BEFEHL.M_START_FEHL'), $gv_baus);
+            }
+        } elseif ($gv_bwas === 'stop') {
+            if ($gv_brc === 0) {
+                $gv_meldungen[] = gv_t('BEFEHL.M_AUS');
+            } else {
+                $gv_fehler[] = sprintf(gv_t('BEFEHL.M_STOP_FEHL'), $gv_baus);
+            }
+        }
     } else {
         /* Bis 0.9.22 ohne Zweig fuer den Fehlschlag (U11). */
         $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['config']);
@@ -1326,6 +1353,11 @@ $gv_cfg = gv_eingaben_ueberlagern($gv_cfg, 'mqtt'); ?>
   <?= gv_e(gv_t('EINST.L_MQTT')) ?></label>
 </div>
 <div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= !empty($gv_cfg['befehle_mqtt_ein']) ? ' checked' : '' ?>>
+  <?= gv_e(gv_t('MQTT.L_BEFEHLE')) ?></label>
+  <div class="sm-hilfe"><?= gv_e(gv_t('MQTT.H_BEFEHLE')) ?></div>
+</div>
+<div class="sm-feld">
   <label for="mqtt_topic"><?= gv_e(gv_t('EINST.L_TOPIC')) ?></label>
   <input data-role="none" type="text" id="mqtt_topic" name="mqtt_topic"<?= gv_markierung('mqtt_topic') ?> value="<?= gv_e($gv_cfg['mqtt_topic']) ?>">
   <div class="sm-hilfe"><?= gv_t('EINST.H_TOPIC') ?></div>
@@ -1377,17 +1409,372 @@ $gv_cfg = gv_eingaben_ueberlagern($gv_cfg, 'mqtt'); ?>
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="sm-seite<?= $gv_tab === 'tab-loxone' ? ' sm-active' : '' ?>" id="tab-loxone">
 <h2><?= gv_e(gv_t('LOX.H_TITEL')) ?></h2>
+<?php /* Gruppe 3 / MQTT (0.9.30; Entwurf gv 2.4 und 3.3, Bauvorschrift Gruppe 1 Nachtrag 2, Hausherr 18./19.10.2026):
+   MQTT ist der Weg des LoxBerry-Plugins Musterprojekts. Schritt 1 Weg festlegen, Schritt 2 das Gateway nach seiner
+   Fassung (V1: das Plugin bringt sein Abo mit; V2 und "nicht feststellbar": Hakenliste je Leuchte, aufgeklappt),
+   Schritt 3 die Namenstabelle (KEINE Importvorlage fuer Werte), Schritt 4 die Ausfallerkennung am Lebenszeichen
+   status/zaehler, Schritt 5 die Befehle aus der Befehlsbruecke (bb_liste(), EINE Quelle mit der Vorlage "Govee
+   MQTT-Befehle"), Schritt 6 die Vorlagen unmittelbar an die Leuchte, Schritt 7 die drei Musterseiten, Schritt 8 die
+   Gegenprobe. Der Weg ueber HTTP (bis 0.9.29 die Schritte 3 und 4 dieses Reiters, Zustandsvorlage, Vorlage "ueber den
+   LoxBerry", Sammelvorlage, Token) steht unveraendert darunter, zugeklappt. Alle Namen aus gv_mqtt_gateway_name(). */
+$gv_eb_gwf = (int) $gv_mqtt['fassung'];
+list($gv_eb_abo_pfad, $gv_eb_abo_da) = gv_abo_datei();
+$gv_eb_nrn = $gv_geraete ? array_keys($gv_geraete) : array(1);
+$gv_eb_kopf = function ($nr) use ($gv_geraete) {
+    return isset($gv_geraete[$nr]) ? sprintf(gv_t('LOX.EB_LEUCHTE'), (int) $nr, $gv_geraete[$nr]['name'])
+                                   : gv_t('LOX.EB_OHNE_LEUCHTE');
+};
+$gv_eb_mono = function ($s) { return '<span class="sm-mono">' . gv_e($s) . '</span>'; };
+list($gv_eb_bl, $gv_eb_blf) = gv_bruecke_liste();
+$gv_eb_port = (int) $gv_mqtt['udpport'] > 0 ? (int) $gv_mqtt['udpport'] : 11884;
+?>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-technik"></i> <?= gv_t('LEGENDE.TECHNIK_XML') ?></span>
+</div>
 
-<div class="sm-step"><b>1. <?= gv_e(gv_t('LOX.S1_T')) ?></b><br><?= gv_t('LOX.S1') ?></div>
+<div class="sm-step"><b>1. <?= gv_e(gv_t('LOX.S1_T')) ?></b><br><?= gv_t('LOX.S1') ?>
+<?php if (empty($gv_cfg['mqtt_ein'])) { ?>
+<div class="sm-warnung"><?= gv_t('LOX.EB_MQTT_AUS') ?></div>
+<?php } ?>
+</div>
 
 <div class="sm-step"><b>2. <?= gv_e(gv_t('LOX.S2_T')) ?></b><br>
 <?= gv_t('LOX.S2') ?>
 <div class="sm-pre"><?= gv_e($gv_thema) ?>/#</div>
-<b><?= gv_abo_text() ?></b>
+<?php if ($gv_eb_gwf < 2) { /* V1 oder nicht feststellbar: das Abo (gv_abo_datei()) */ ?>
+<div class="<?= $gv_eb_abo_da ? 'sm-hinweis' : 'sm-warnung' ?>"><?= gv_t($gv_eb_abo_da ? 'MQTT.ABO_V1_DATEI' : 'MQTT.ABO_V1_FEHLT') ?></div>
+<?php } ?>
+<?php if ($gv_eb_gwf !== 1) { /* V2 oder nicht feststellbar: die Hakenliste je Leuchte, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= sprintf(gv_t('LOX.EB_V2'), $gv_eb_mono($gv_thema)) ?></div>
+<?php foreach ($gv_eb_nrn as $gv_eb_i => $gv_eb_nr) {
+    /* Lebenszeichen nur einmal - bei der ersten eingerichteten Leuchte */
+    $gv_eb_h = gv_mqtt_hakenliste($gv_eb_nr, $gv_eb_i === 0);
+    $gv_eb_nc = 0;
+    foreach ($gv_eb_h as $gv_eb_z) { if ($gv_eb_z[4]) { $gv_eb_nc++; } } ?>
+<details open><summary><?= gv_e(sprintf(gv_t('LOX.EB_HAKEN_AUF'), $gv_eb_kopf($gv_eb_nr), count($gv_eb_h), $gv_eb_nc)) ?></summary>
+<table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= gv_e(gv_t('LOX.EB_T_THEMA')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_NAME')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($gv_eb_h as $gv_eb_hi => $gv_eb_hz) { ?>
+<tr><td><?= (int) $gv_eb_hi + 1 ?></td><td><?= $gv_eb_mono($gv_eb_hz[0]) ?><?= $gv_eb_hz[4] ? ' <b>' . gv_e(gv_t('LOX.EB_NONCACHED')) . '</b>' : '' ?></td><td><?= $gv_eb_mono($gv_eb_hz[1]) ?></td><td><?= gv_e($gv_eb_hz[2]) ?></td></tr>
+<?php } ?>
+</table>
+</details>
+<?php } ?>
+<?php } ?>
+<div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_NEUSTART')) ?></div>
 </div>
 
 <div class="sm-step"><b>3. <?= gv_e(gv_t('LOX.S3_T')) ?></b><br>
 <?= gv_t('LOX.S3') ?>
+<?php foreach ($gv_eb_nrn as $gv_eb_i => $gv_eb_nr) { ?>
+<h4 class="sm-h4"><?= gv_e($gv_eb_kopf($gv_eb_nr)) ?></h4>
+<table class="sm-tbl">
+<tr><th style="width:34px;">#</th><th><?= gv_e(gv_t('LOX.EB_T_NAME')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_THEMA')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_BEDEUTUNG')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_BEREICH')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_ART')) ?></th><th><?= gv_e(gv_t('LOX.EB_T_MUSTER')) ?></th></tr>
+<?php foreach (gv_mqtt_namen($gv_eb_nr, $gv_eb_i === 0) as $gv_eb_ni => $gv_eb_nz) { ?>
+<tr><td><?= (int) $gv_eb_ni + 1 ?></td><td><?= $gv_eb_mono($gv_eb_nz['name']) ?> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= gv_e($gv_eb_nz['name']) ?>"><?= gv_e(gv_t('LOX.EB_KOPIEREN')) ?></button></td><td><?= $gv_eb_mono($gv_thema . '/' . $gv_eb_nz['thema']) ?></td><td><?= gv_e($gv_eb_nz['bedeutung']) ?></td><td><?= $gv_eb_nz['bereich'] === '' ? '&ndash;' : gv_e($gv_eb_nz['bereich']) ?></td><td><?= gv_e(gv_t($gv_eb_nz['art'] === 'text' ? 'LOX.EB_ART_TEXT' : 'LOX.EB_ART_ZAHL')) ?></td><td><?= gv_e(gv_t($gv_eb_nz['im_muster'] ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td></tr>
+<?php } ?>
+</table>
+<?php } ?>
+<div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_DIGITAL')) ?></div>
+<div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_RECHTE')) ?></div>
+<div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_MUSTER')) ?></div>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(gv_t('LOX.EB_KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
+</div>
+
+<div class="sm-step"><b>4. <?= gv_e(gv_t('LOX.S5_T')) ?></b><br>
+<?= sprintf(gv_t('LOX.S5'), $gv_eb_mono(gv_mqtt_gateway_name('status/zaehler')),
+            $gv_eb_mono(gv_mqtt_gateway_name('geraet' . (int) $gv_eb_nrn[0] . '/erreichbar'))) ?>
+</div>
+
+<div class="sm-step"><b>5. <?= gv_e(gv_t('LOX.EB_S5_T')) ?></b><br>
+<?= gv_e(sprintf(gv_t('LOX.EB_S5'), $gv_eb_port)) ?>
+<div class="<?= !empty($gv_cfg['befehle_mqtt_ein']) ? 'sm-hinweis' : 'sm-warnung' ?>"><?= gv_e(sprintf(gv_t('LOX.EB_S5_HAKEN'), gv_t('MQTT.L_BEFEHLE'), gv_t('EINST.L_STEUERUNG'), gv_t('REITER.EINSTELLUNGEN'))) ?></div>
+<?php if ($gv_eb_bl === null) { ?>
+<div class="sm-warnung"><?= gv_e(sprintf(gv_t('LOX.EB_S5_KEINE'), $gv_eb_blf)) ?></div>
+<?php } else { ?>
+<table class="sm-tbl">
+<tr><th><?= gv_e(gv_t('BEFEHL.SP_BEDEUTUNG')) ?></th><th><?= gv_e(gv_t('BEFEHL.SP_TITEL')) ?></th><th><?= gv_e(gv_t('BEFEHL.SP_THEMA')) ?></th><th><?= gv_e(gv_t('BEFEHL.SP_BEFEHL')) ?></th><th><?= gv_e(gv_t('BEFEHL.SP_SCHALTET')) ?></th><th><?= gv_e(gv_t('BEFEHL.SP_SPERRE')) ?></th><th><?= gv_e(gv_t('BEFEHL.SP_QUITTUNG')) ?></th></tr>
+<?php $gv_eb_g1 = 'geraet' . (int) $gv_eb_nrn[0];
+foreach ($gv_eb_bl['befehle'] as $gv_eb_b) {
+    $gv_eb_th = str_replace('{geraet}', $gv_eb_g1, $gv_eb_b['thema']);
+    $gv_eb_lx = str_replace('{geraet}', $gv_eb_g1, $gv_eb_b['loxone']['ein'])
+              . ($gv_eb_b['loxone']['aus'] !== '' ? ' / ' . str_replace('{geraet}', $gv_eb_g1, $gv_eb_b['loxone']['aus']) : ''); ?>
+<tr><td><?= gv_e(gv_t($gv_eb_b['kachel'])) ?></td><td><?= gv_e($gv_eb_b['titel']) ?></td><td><?= $gv_eb_mono($gv_eb_th) ?></td><td><?= $gv_eb_mono($gv_eb_lx) ?></td><td><?= gv_e(gv_t($gv_eb_b['eingreifend'] ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td><td><?= (int) $gv_eb_b['sperre_s'] ?> s</td><td><?= gv_e(gv_t($gv_eb_b['quittung'] === 'uebergeben' ? 'BEFEHL.QUITTUNG_UEBERGEBEN' : 'BEFEHL.QUITTUNG_AUSGEFUEHRT')) ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= gv_e(sprintf(gv_t('LOX.EB_S5_THEMA'), $gv_thema . '/befehl/geraet<N>/<' . gv_t('BEFEHL.SP_BEDEUTUNG') . '>')) ?></div>
+<div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_S5_QUITTUNG')) ?></div>
+<?php if ($gv_geraete) { ?>
+<div class="sm-knopfreihe">
+<?php foreach ($gv_geraete as $gv_nr => $gv_g) { ?>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="mqtt_befehle"><?= gv_e(gv_t('LOX.K_VQ_MQTT')) ?> &ndash; <?= gv_e($gv_g['name']) ?></button>
+  </form>
+<?php } ?>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= gv_t('LOX.KEINE_GERAETE') ?></div>
+<?php } ?>
+<div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_S5_VORLAGE')) ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b>6. <?= gv_e(gv_t('LOX.EB_S6_T')) ?></b><br>
+<?= gv_t('LOX.EB_S6') ?>
+<?php if ($gv_geraete) { foreach ($gv_geraete as $gv_nr => $gv_g) { if ($gv_g['art'] !== 'lan') { continue; } ?>
+<h4 class="sm-h4"><?= gv_e($gv_g['name']) ?> <span class="sm-mono"><?= gv_e($gv_g['ip']) ?></span></h4>
+<div class="sm-knopfreihe">
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="ausgang"><?= gv_e(gv_t('LOX.K_VQ')) ?></button>
+  </form>
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
+    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="szenen"><?= gv_e(gv_t('LOX.K_VQ_SZENEN')) ?></button>
+  </form>
+</div>
+<?php } } else { ?>
+<div class="sm-hinweis"><?= gv_t('LOX.KEINE_GERAETE') ?></div>
+<?php } ?>
+</div>
+
+<?php
+/**
+ * Die Baustein-Listen fuer Schritt 6 (Welle Bild 19, 0.9.27; Hausherr 11.10.2026: Vollausstattung, ein
+ * absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 19 gv, Entscheidungen 1-14).
+ * Drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und verbunden
+ * (Musterprojekt/baustein_listen.txt, Abschnitte "Govee" 20, "Govee Licht" 24 und "Govee Szenen und Balken" 16
+ * Zeilen, Stand Gruppe 3 / MQTT 0.9.30: Eingaenge sind Virtuelle Eingaenge mit dem Namen des MQTT-Gateways,
+ * Befehle ueber den Ausgang "LoxBerry MQTT-Gateway"; bis 0.9.29 "Govee" 18
+ * Zeilen, wortgleich). Je Tabellenzeile EIN Sprachschluessel BAUSTEIN.Z<seite>_<nn> = "Typ | Name | Parameter |
+ * Eingaenge" ohne Auszeichnung; jede Zelle und jeder Satz wird maskiert ausgegeben. Zeilen mit Prozentzeichen
+ * tragen es verdoppelt (%%) und gehen durch sprintf().
+ *
+ * Bis 0.9.26 stand hier eine Tabelle mit 8 Zeilen (LOX.B1-B8): Lichtsteuerung ohne Muster im Projekt,
+ * Schwellwertschalter und Statusbaustein mit elf Balkenbefehlen, Ausfall ueber einen Vergleicher "Schwelle 3" an
+ * FEHL ohne Verzoegerung - ein stehender LoxBerry blieb dabei unbemerkt.
+ *
+ * Rueckgabe: je Seite 'kopf' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze), 'zeilen'
+ * (je ein Text mit vier Zellen) - alles reiner Text, Namen wie im Musterprojekt; gv_bs_text() rechnet sie um.
+ */
+function gv_bausteinseiten()
+{
+    return array(
+        array('kopf' => 'Govee', 'bild' => 'einbindung_loxone.png',
+              'schritte' => array(
+                  gv_t('BAUSTEIN.S1_SCHRITT1'),
+                  sprintf(gv_t('BAUSTEIN.S1_SCHRITT2'), gv_t('REITER.TEST'), gv_t('TEST.K_SUCHE'), gv_t('REITER.EINSTELLUNGEN'), gv_t('EINST.K_UEBERNEHMEN'), gv_t('EINST.K_START'), gv_t('REITER.TEST'), gv_t('TEST.K_STATUS')),
+                  sprintf(gv_t('BAUSTEIN.S1_SCHRITT3'), gv_t('EINST.L_MQTT'), gv_t('REITER.LOXONE')),
+                  gv_t('BAUSTEIN.S1_SCHRITT4'),
+                  gv_t('BAUSTEIN.S1_SCHRITT5'),
+                  gv_t('BAUSTEIN.S1_SCHRITT6')),
+              'zeilen' => array(
+                  gv_t('BAUSTEIN.Z1_01'),
+                  gv_t('BAUSTEIN.Z1_02'),
+                  gv_t('BAUSTEIN.Z1_03'),
+                  gv_t('BAUSTEIN.Z1_04'),
+                  gv_t('BAUSTEIN.Z1_05'),
+                  sprintf(gv_t('BAUSTEIN.Z1_06')),
+                  gv_t('BAUSTEIN.Z1_07'),
+                  gv_t('BAUSTEIN.Z1_08'),
+                  gv_t('BAUSTEIN.Z1_09'),
+                  gv_t('BAUSTEIN.Z1_10'),
+                  gv_t('BAUSTEIN.Z1_11'),
+                  gv_t('BAUSTEIN.Z1_12'),
+                  gv_t('BAUSTEIN.Z1_13'),
+                  gv_t('BAUSTEIN.Z1_14'),
+                  gv_t('BAUSTEIN.Z1_15'),
+                  gv_t('BAUSTEIN.Z1_16'),
+                  gv_t('BAUSTEIN.Z1_17'),
+                  sprintf(gv_t('BAUSTEIN.Z1_18')),
+                  gv_t('BAUSTEIN.Z1_19'),
+                  gv_t('BAUSTEIN.Z1_20')),
+              'hinweise' => array(
+                  gv_t('BAUSTEIN.S1_H1'),
+                  gv_t('BAUSTEIN.S1_H2'),
+                  gv_t('BAUSTEIN.S1_H3'),
+                  sprintf(gv_t('BAUSTEIN.S1_H5'), gv_t('LOX.EB_BISHER')),
+                  gv_t('BAUSTEIN.S1_H6'))),
+        array('kopf' => 'Govee Licht', 'bild' => 'einbindung_loxone_licht.png',
+              'schritte' => array(
+                  sprintf(gv_t('BAUSTEIN.S2_SCHRITT1'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VQ'), gv_t('LOX.K_VQ_MQTT'), gv_t('MQTT.L_BEFEHLE'), gv_t('EINST.L_STEUERUNG'), gv_t('REITER.EINSTELLUNGEN')),
+                  gv_t('BAUSTEIN.S2_SCHRITT2'),
+                  gv_t('BAUSTEIN.S2_SCHRITT3'),
+                  gv_t('BAUSTEIN.S2_SCHRITT4'),
+                  gv_t('BAUSTEIN.S2_SCHRITT5')),
+              'zeilen' => array(
+                  gv_t('BAUSTEIN.Z2_01'),
+                  gv_t('BAUSTEIN.Z2_02'),
+                  gv_t('BAUSTEIN.Z2_03'),
+                  gv_t('BAUSTEIN.Z2_04'),
+                  sprintf(gv_t('BAUSTEIN.Z2_05')),
+                  gv_t('BAUSTEIN.Z2_06'),
+                  gv_t('BAUSTEIN.Z2_07'),
+                  gv_t('BAUSTEIN.Z2_08'),
+                  gv_t('BAUSTEIN.Z2_09'),
+                  gv_t('BAUSTEIN.Z2_10'),
+                  gv_t('BAUSTEIN.Z2_11'),
+                  gv_t('BAUSTEIN.Z2_12'),
+                  gv_t('BAUSTEIN.Z2_13'),
+                  gv_t('BAUSTEIN.Z2_14'),
+                  gv_t('BAUSTEIN.Z2_15'),
+                  gv_t('BAUSTEIN.Z2_16'),
+                  gv_t('BAUSTEIN.Z2_17'),
+                  gv_t('BAUSTEIN.Z2_18'),
+                  gv_t('BAUSTEIN.Z2_19'),
+                  gv_t('BAUSTEIN.Z2_20'),
+                  gv_t('BAUSTEIN.Z2_21'),
+                  gv_t('BAUSTEIN.Z2_22'),
+                  gv_t('BAUSTEIN.Z2_23'),
+                  gv_t('BAUSTEIN.Z2_24')),
+              'hinweise' => array(
+                  gv_t('BAUSTEIN.S2_H1'),
+                  gv_t('BAUSTEIN.S2_H2'),
+                  sprintf(gv_t('BAUSTEIN.S2_H3'), gv_t('LOX.K_VQ_MQTT')),
+                  gv_t('BAUSTEIN.S2_H4'),
+                  gv_t('BAUSTEIN.S2_H5'),
+                  sprintf(gv_t('BAUSTEIN.S2_H6'), gv_t('LOX.K_VQ_MQTT')),
+                  gv_t('BAUSTEIN.S2_H7'))),
+        array('kopf' => 'Govee Szenen und Balken', 'bild' => 'einbindung_loxone_szenen_balken.png',
+              'schritte' => array(
+                  sprintf(gv_t('BAUSTEIN.S3_SCHRITT1'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VQ_SZENEN'), gv_t('LOX.K_VQ_MQTT')),
+                  gv_t('BAUSTEIN.S3_SCHRITT2'),
+                  gv_t('BAUSTEIN.S3_SCHRITT3'),
+                  sprintf(gv_t('BAUSTEIN.S3_SCHRITT4'), gv_t('REITER.TEST'))),
+              'zeilen' => array(
+                  gv_t('BAUSTEIN.Z3_01'),
+                  gv_t('BAUSTEIN.Z3_02'),
+                  gv_t('BAUSTEIN.Z3_03'),
+                  gv_t('BAUSTEIN.Z3_04'),
+                  gv_t('BAUSTEIN.Z3_05'),
+                  gv_t('BAUSTEIN.Z3_06'),
+                  gv_t('BAUSTEIN.Z3_07'),
+                  gv_t('BAUSTEIN.Z3_08'),
+                  gv_t('BAUSTEIN.Z3_09'),
+                  gv_t('BAUSTEIN.Z3_10'),
+                  gv_t('BAUSTEIN.Z3_11'),
+                  gv_t('BAUSTEIN.Z3_12'),
+                  gv_t('BAUSTEIN.Z3_13'),
+                  gv_t('BAUSTEIN.Z3_14'),
+                  sprintf(gv_t('BAUSTEIN.Z3_15')),
+                  sprintf(gv_t('BAUSTEIN.Z3_16'))),
+              'hinweise' => array(
+                  gv_t('BAUSTEIN.S3_H1'),
+                  gv_t('BAUSTEIN.S3_H2'),
+                  gv_t('BAUSTEIN.S3_H3'),
+                  sprintf(gv_t('BAUSTEIN.S3_H4'), gv_t('REITER.TEST'), gv_t('TEST.K_SZENENR')),
+                  gv_t('BAUSTEIN.S3_H5')))
+    );
+}
+
+/**
+ * Ein Text der Baustein-Seiten fuer die Ausgabe: die Namen aus den Vorlagen (Behaelter "GOVEE Lichtleiste ...",
+ * Befehle GOVEE_1_... und "Lichtleiste - ...", Bausteine "Lichtleiste (Govee)") auf die gezeigte Leuchte
+ * gerechnet - so, wie die Vorlagen-Knoepfe sie fuer diese Leuchte erzeugen (Entwurf Welle 19 gv, Abschnitt 4:
+ * Name und Nummer aus dem ersten Geraet; ohne Geraet "Lichtleiste"/1 wie das Musterprojekt). Der Behaelter der
+ * Grundbefehle traegt die SKU, wenn eine eingetragen ist. "Zustand abfragen (Geraet 1)" bleibt stehen: so heisst
+ * der Knopf im Reiter Test, und er fragt immer Geraet 1.
+ */
+function gv_bs_text($s, $g)
+{
+    /* Gruppe 3 / MQTT (0.9.30): dazu die Namen des MQTT-Gateways und die Befehlsthemen - Praefix aus dem Reiter MQTT,
+     * Nummer der gezeigten Leuchte (govee_geraet1_..., govee_status_..., govee/befehl/geraet1/...). Ohne Leuchte und
+     * mit Praefix govee bleibt alles wie im Musterprojekt. */
+    static $praefix = null;
+    if ($praefix === null) {
+        $praefix = trim((string) gv_config(false)['mqtt_topic'], '/');
+    }
+    $s = (string) $s;
+    $nr = is_array($g) ? (int) $g['nr'] : 1;
+    $ersatz = array();
+    if ($praefix !== 'govee' || $nr !== 1) {
+        $ersatz['govee/befehl/geraet1/'] = $praefix . '/befehl/geraet' . $nr . '/';
+        $ersatz['govee/befehl/'] = $praefix . '/befehl/';
+        $ersatz['govee_geraet1_'] = gv_mqtt_gateway_name('geraet' . $nr . '/', $praefix);
+        $ersatz['govee_status_'] = gv_mqtt_gateway_name('status/', $praefix);
+    }
+    if (is_array($g)) {
+        $name = (string) $g['name'];
+        $sku = (string) $g['sku'];
+        if (!($nr === 1 && $name === 'Lichtleiste' && $sku === '')) {
+            $vq = 'GOVEE ' . $name . ($sku !== '' ? ' (' . $sku . ')' : '');
+            /* strtr: ein Durchgang, laengster Treffer zuerst - ein Name, der selbst "Lichtleiste" enthaelt, wird nicht
+             * ein zweites Mal ersetzt. */
+            $ersatz["\u{201e}GOVEE Lichtleiste\u{201c}"] = "\u{201e}" . $vq . "\u{201c}";
+            $ersatz["\u{201c}GOVEE Lichtleiste\u{201d}"] = "\u{201c}" . $vq . "\u{201d}";
+            $ersatz['GOVEE_1_'] = 'GOVEE_' . $nr . '_';
+            $ersatz['Lichtleiste'] = $name;
+        }
+    }
+    return $ersatz ? strtr($s, $ersatz) : $s;
+}
+
+// Gezeigt wird die Leuchte mit der kleinsten Nummer (gv_geraete() ist danach sortiert).
+$gv_bsg = $gv_geraete ? reset($gv_geraete) : null;
+?>
+<div class="sm-step"><b>7. <?= gv_e(gv_t('LOX.S6_T')) ?></b><br>
+<?= gv_t('LOX.S6') ?>
+<?php foreach (gv_bausteinseiten() as $gv_bsei) { ?>
+<h4 class="sm-h4"><?= gv_e($gv_bsei['kopf']) ?></h4>
+<div class="sm-hinweis"><b><?= gv_e(gv_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
+<ol class="sm-schritte">
+<?php foreach ($gv_bsei['schritte'] as $gv_bsx) { ?>
+<li><?= gv_e(gv_bs_text($gv_bsx, $gv_bsg)) ?></li>
+<?php } ?>
+</ol></div>
+<table class="sm-tbl">
+<tr><th style="width:28px;">#</th><th><?= gv_e(gv_t('LOX.B_TYP')) ?></th><th><?= gv_e(gv_t('LOX.B_NAME')) ?></th>
+    <th><?= gv_e(gv_t('LOX.B_PARAM')) ?></th><th><?= gv_e(gv_t('LOX.B_EIN')) ?></th></tr>
+<?php foreach ($gv_bsei['zeilen'] as $gv_bsi => $gv_bsz) {
+    $gv_bsc = array_pad(explode(' | ', $gv_bsz, 4), 4, ''); ?>
+<tr><td><?= (int) $gv_bsi + 1 ?></td><td><?= gv_e(gv_bs_text($gv_bsc[0], $gv_bsg)) ?></td><td><?= gv_e(gv_bs_text($gv_bsc[1], $gv_bsg)) ?></td>
+    <td><?= gv_e(gv_bs_text($gv_bsc[2], $gv_bsg)) ?></td><td><?= gv_e(gv_bs_text($gv_bsc[3], $gv_bsg)) ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-warnung"><b><?= gv_e(gv_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
+<ul class="sm-schritte">
+<?php foreach ($gv_bsei['hinweise'] as $gv_bsx) { ?>
+<li><?= gv_e(gv_bs_text($gv_bsx, $gv_bsg)) ?></li>
+<?php } ?>
+</ul></div>
+<figure class="sm-bild">
+<img src="<?= gv_e($gv_bsei['bild']) ?>" alt="<?= gv_e(gv_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= gv_e(sprintf(gv_t('LOX.BILD_UNTERSCHRIFT'), $gv_bsei['kopf'])) ?></figcaption>
+</figure>
+<div class="sm-hilfe"><?= gv_t('LOX.MUSTERPROJEKT') ?></div>
+<?php } ?>
+</div>
+
+<div class="sm-step"><b>8. <?= gv_e(gv_t('LOX.S7_T')) ?></b><br><?= gv_t('LOX.S7') ?></div>
+
+<details class="sm-step"><summary><b><?= gv_e(gv_t('LOX.EB_BISHER')) ?></b></summary>
+<p class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_BISHER_TEXT')) ?></p>
+<h3><?= gv_e(gv_t('LOX.K_VI')) ?></h3>
+<?= gv_t('LOX.EB_HTTP_S3') ?>
 <table class="sm-tbl">
 <tr><th><?= gv_e(gv_t('LOX.T_TITEL')) ?></th><th><?= gv_e(gv_t('LOX.T_EINHEIT')) ?></th>
     <th><?= gv_e(gv_t('LOX.T_BEDEUTUNG')) ?></th></tr>
@@ -1407,9 +1794,8 @@ if ($gv_geraete) {
 <?php } ?>
 </table>
 <b><?= gv_t('LOX.IMPORT_WARNUNG') ?></b>
-</div>
 
-<div class="sm-step"><b>4. <?= gv_e(gv_t('LOX.S4_T')) ?></b><br>
+<h3><?= gv_e(gv_t('LOX.S4_T')) ?></h3>
 <?= gv_t('LOX.S4') ?>
 <table class="sm-tbl">
 <tr><th style="width:22%;"><?= gv_e(gv_t('LOX.T_AKTION')) ?></th><th><?= gv_e(gv_t('LOX.T_ADRESSE')) ?></th></tr>
@@ -1418,7 +1804,7 @@ if ($gv_geraete) {
 <tr><td><span class="sm-mono">ein</span> / <span class="sm-mono">aus</span></td>
     <td><span class="sm-mono">…?token=…&amp;aktion=ein&amp;geraet=1</span></td></tr>
 <tr><td><span class="sm-mono">hell</span></td>
-    <td><span class="sm-mono">…&amp;aktion=hell&amp;geraet=1&amp;wert=60</span> (1&ndash;100)</td></tr>
+    <td><span class="sm-mono">…&amp;aktion=hell&amp;geraet=1&amp;wert=60</span> (0&ndash;100, 0 = aus)</td></tr>
 <tr><td><span class="sm-mono">kelvin</span></td>
     <td><span class="sm-mono">…&amp;aktion=kelvin&amp;geraet=1&amp;wert=2700</span></td></tr>
 <tr><td><span class="sm-mono">farbe</span></td>
@@ -1434,32 +1820,12 @@ if ($gv_geraete) {
     <td><span class="sm-mono">…&amp;aktion=abruf</span></td></tr>
 </table>
 <?= gv_t('LOX.S4_ODER') ?>
-</div>
-
-<div class="sm-step"><b>5. <?= gv_e(gv_t('LOX.S5_T')) ?></b><br><?= gv_t('LOX.S5') ?></div>
 
 <h3><?= gv_e(gv_t('LOX.H_VORLAGEN')) ?></h3>
 <p class="sm-hilfe"><?= gv_t('LOX.VORLAGEN_ERKLAERUNG') ?></p>
-<div class="sm-legende">
-<span><i class="sm-punkt sm-b-technik"></i> <?= gv_t('LEGENDE.TECHNIK_XML') ?></span>
-</div>
 <?php if ($gv_geraete) { foreach ($gv_geraete as $gv_nr => $gv_g) { ?>
-<h3><?= gv_e($gv_g['name']) ?> <span class="sm-mono"><?= gv_e($gv_g['ip'] !== '' ? $gv_g['ip'] : $gv_g['art']) ?></span></h3>
+<h4 class="sm-h4"><?= gv_e($gv_g['name']) ?> <span class="sm-mono"><?= gv_e($gv_g['ip'] !== '' ? $gv_g['ip'] : $gv_g['art']) ?></span></h4>
 <div class="sm-knopfreihe">
-<?php if ($gv_g['art'] === 'lan') { ?>
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
-    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="ausgang"><?= gv_e(gv_t('LOX.K_VQ')) ?></button>
-  </form>
-  <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
-    <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
-    <input data-role="none" type="hidden" name="vorlage_nr" value="<?= (int) $gv_nr ?>">
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="vorlage" value="szenen"><?= gv_e(gv_t('LOX.K_VQ_SZENEN')) ?></button>
-  </form>
-<?php } ?>
   <form action="index.php" method="post">
     <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
     <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
@@ -1502,200 +1868,7 @@ if ($gv_geraete) {
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="1"><?= gv_e(gv_t('LOX.K_TOKEN_NEU')) ?></button>
   </form>
 </div>
-
-<?php
-/**
- * Die Baustein-Listen fuer Schritt 6 (Welle Bild 19, 0.9.27; Hausherr 11.10.2026: Vollausstattung, ein
- * absoluter Laie soll das Maximum leicht uebernehmen koennen; Entwurf Welle 19 gv, Entscheidungen 1-14).
- * Drei Seiten aus dem LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und verbunden
- * (Musterprojekt/baustein_listen.txt, Abschnitte "Govee" 18, "Govee Licht" 24 und "Govee Szenen und Balken" 16
- * Zeilen, wortgleich). Je Tabellenzeile EIN Sprachschluessel BAUSTEIN.Z<seite>_<nn> = "Typ | Name | Parameter |
- * Eingaenge" ohne Auszeichnung; jede Zelle und jeder Satz wird maskiert ausgegeben. Zeilen mit Prozentzeichen
- * tragen es verdoppelt (%%) und gehen durch sprintf().
- *
- * Bis 0.9.26 stand hier eine Tabelle mit 8 Zeilen (LOX.B1-B8): Lichtsteuerung ohne Muster im Projekt,
- * Schwellwertschalter und Statusbaustein mit elf Balkenbefehlen, Ausfall ueber einen Vergleicher "Schwelle 3" an
- * FEHL ohne Verzoegerung - ein stehender LoxBerry blieb dabei unbemerkt.
- *
- * Rueckgabe: je Seite 'kopf' (Name der Musterseite), 'bild', 'schritte' und 'hinweise' (Saetze), 'zeilen'
- * (je ein Text mit vier Zellen) - alles reiner Text, Namen wie im Musterprojekt; gv_bs_text() rechnet sie um.
- */
-function gv_bausteinseiten()
-{
-    return array(
-        array('kopf' => 'Govee', 'bild' => 'einbindung_loxone.png',
-              'schritte' => array(
-                  gv_t('BAUSTEIN.S1_SCHRITT1'),
-                  sprintf(gv_t('BAUSTEIN.S1_SCHRITT2'), gv_t('REITER.TEST'), gv_t('TEST.K_SUCHE'), gv_t('REITER.EINSTELLUNGEN'), gv_t('EINST.K_UEBERNEHMEN'), gv_t('EINST.K_START'), gv_t('REITER.TEST'), gv_t('TEST.K_STATUS')),
-                  sprintf(gv_t('BAUSTEIN.S1_SCHRITT3'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VI')),
-                  gv_t('BAUSTEIN.S1_SCHRITT4'),
-                  gv_t('BAUSTEIN.S1_SCHRITT5'),
-                  gv_t('BAUSTEIN.S1_SCHRITT6')),
-              'zeilen' => array(
-                  gv_t('BAUSTEIN.Z1_01'),
-                  gv_t('BAUSTEIN.Z1_02'),
-                  gv_t('BAUSTEIN.Z1_03'),
-                  gv_t('BAUSTEIN.Z1_04'),
-                  gv_t('BAUSTEIN.Z1_05'),
-                  sprintf(gv_t('BAUSTEIN.Z1_06')),
-                  gv_t('BAUSTEIN.Z1_07'),
-                  gv_t('BAUSTEIN.Z1_08'),
-                  gv_t('BAUSTEIN.Z1_09'),
-                  gv_t('BAUSTEIN.Z1_10'),
-                  gv_t('BAUSTEIN.Z1_11'),
-                  gv_t('BAUSTEIN.Z1_12'),
-                  gv_t('BAUSTEIN.Z1_13'),
-                  gv_t('BAUSTEIN.Z1_14'),
-                  gv_t('BAUSTEIN.Z1_15'),
-                  gv_t('BAUSTEIN.Z1_16'),
-                  gv_t('BAUSTEIN.Z1_17'),
-                  sprintf(gv_t('BAUSTEIN.Z1_18'))),
-              'hinweise' => array(
-                  gv_t('BAUSTEIN.S1_H1'),
-                  gv_t('BAUSTEIN.S1_H2'),
-                  sprintf(gv_t('BAUSTEIN.S1_H3'), gv_t('LOX.K_VI_ALLE')),
-                  sprintf(gv_t('BAUSTEIN.S1_H4'), gv_t('LOX.K_TOKEN_NEU')),
-                  gv_t('BAUSTEIN.S1_H5'))),
-        array('kopf' => 'Govee Licht', 'bild' => 'einbindung_loxone_licht.png',
-              'schritte' => array(
-                  sprintf(gv_t('BAUSTEIN.S2_SCHRITT1'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VQ'), gv_t('LOX.K_VQ_LOX'), gv_t('REITER.EINSTELLUNGEN'), gv_t('EINST.L_STEUERUNG')),
-                  gv_t('BAUSTEIN.S2_SCHRITT2'),
-                  gv_t('BAUSTEIN.S2_SCHRITT3'),
-                  gv_t('BAUSTEIN.S2_SCHRITT4'),
-                  gv_t('BAUSTEIN.S2_SCHRITT5')),
-              'zeilen' => array(
-                  gv_t('BAUSTEIN.Z2_01'),
-                  gv_t('BAUSTEIN.Z2_02'),
-                  gv_t('BAUSTEIN.Z2_03'),
-                  gv_t('BAUSTEIN.Z2_04'),
-                  sprintf(gv_t('BAUSTEIN.Z2_05')),
-                  gv_t('BAUSTEIN.Z2_06'),
-                  gv_t('BAUSTEIN.Z2_07'),
-                  gv_t('BAUSTEIN.Z2_08'),
-                  gv_t('BAUSTEIN.Z2_09'),
-                  gv_t('BAUSTEIN.Z2_10'),
-                  gv_t('BAUSTEIN.Z2_11'),
-                  gv_t('BAUSTEIN.Z2_12'),
-                  gv_t('BAUSTEIN.Z2_13'),
-                  gv_t('BAUSTEIN.Z2_14'),
-                  gv_t('BAUSTEIN.Z2_15'),
-                  gv_t('BAUSTEIN.Z2_16'),
-                  gv_t('BAUSTEIN.Z2_17'),
-                  gv_t('BAUSTEIN.Z2_18'),
-                  gv_t('BAUSTEIN.Z2_19'),
-                  gv_t('BAUSTEIN.Z2_20'),
-                  gv_t('BAUSTEIN.Z2_21'),
-                  gv_t('BAUSTEIN.Z2_22'),
-                  gv_t('BAUSTEIN.Z2_23'),
-                  gv_t('BAUSTEIN.Z2_24')),
-              'hinweise' => array(
-                  gv_t('BAUSTEIN.S2_H1'),
-                  gv_t('BAUSTEIN.S2_H2'),
-                  gv_t('BAUSTEIN.S2_H3'),
-                  gv_t('BAUSTEIN.S2_H4'),
-                  gv_t('BAUSTEIN.S2_H5'),
-                  sprintf(gv_t('BAUSTEIN.S2_H6'), gv_t('LOX.K_VQ_LOX')),
-                  gv_t('BAUSTEIN.S2_H7'))),
-        array('kopf' => 'Govee Szenen und Balken', 'bild' => 'einbindung_loxone_szenen_balken.png',
-              'schritte' => array(
-                  sprintf(gv_t('BAUSTEIN.S3_SCHRITT1'), gv_t('REITER.LOXONE'), gv_t('LOX.K_VQ_SZENEN'), gv_t('LOX.K_VQ_LOX')),
-                  gv_t('BAUSTEIN.S3_SCHRITT2'),
-                  gv_t('BAUSTEIN.S3_SCHRITT3'),
-                  sprintf(gv_t('BAUSTEIN.S3_SCHRITT4'), gv_t('REITER.TEST'))),
-              'zeilen' => array(
-                  gv_t('BAUSTEIN.Z3_01'),
-                  gv_t('BAUSTEIN.Z3_02'),
-                  gv_t('BAUSTEIN.Z3_03'),
-                  gv_t('BAUSTEIN.Z3_04'),
-                  gv_t('BAUSTEIN.Z3_05'),
-                  gv_t('BAUSTEIN.Z3_06'),
-                  gv_t('BAUSTEIN.Z3_07'),
-                  gv_t('BAUSTEIN.Z3_08'),
-                  gv_t('BAUSTEIN.Z3_09'),
-                  gv_t('BAUSTEIN.Z3_10'),
-                  gv_t('BAUSTEIN.Z3_11'),
-                  gv_t('BAUSTEIN.Z3_12'),
-                  gv_t('BAUSTEIN.Z3_13'),
-                  gv_t('BAUSTEIN.Z3_14'),
-                  sprintf(gv_t('BAUSTEIN.Z3_15')),
-                  sprintf(gv_t('BAUSTEIN.Z3_16'))),
-              'hinweise' => array(
-                  gv_t('BAUSTEIN.S3_H1'),
-                  gv_t('BAUSTEIN.S3_H2'),
-                  gv_t('BAUSTEIN.S3_H3'),
-                  sprintf(gv_t('BAUSTEIN.S3_H4'), gv_t('REITER.TEST'), gv_t('TEST.K_SZENENR')),
-                  gv_t('BAUSTEIN.S3_H5'))),
-    );
-}
-
-/**
- * Ein Text der Baustein-Seiten fuer die Ausgabe: die Namen aus den Vorlagen (Behaelter "GOVEE Lichtleiste ...",
- * Befehle GOVEE_1_... und "Lichtleiste - ...", Bausteine "Lichtleiste (Govee)") auf die gezeigte Leuchte
- * gerechnet - so, wie die Vorlagen-Knoepfe sie fuer diese Leuchte erzeugen (Entwurf Welle 19 gv, Abschnitt 4:
- * Name und Nummer aus dem ersten Geraet; ohne Geraet "Lichtleiste"/1 wie das Musterprojekt). Der Behaelter der
- * Grundbefehle traegt die SKU, wenn eine eingetragen ist. "Zustand abfragen (Geraet 1)" bleibt stehen: so heisst
- * der Knopf im Reiter Test, und er fragt immer Geraet 1.
- */
-function gv_bs_text($s, $g)
-{
-    $s = (string) $s;
-    if (!is_array($g)) {
-        return $s;
-    }
-    $nr = (int) $g['nr'];
-    $name = (string) $g['name'];
-    $sku = (string) $g['sku'];
-    if ($nr === 1 && $name === 'Lichtleiste' && $sku === '') {
-        return $s;
-    }
-    $vq = 'GOVEE ' . $name . ($sku !== '' ? ' (' . $sku . ')' : '');
-    /* strtr: ein Durchgang, laengster Treffer zuerst - ein Name, der selbst "Lichtleiste" enthaelt, wird nicht
-     * ein zweites Mal ersetzt. */
-    return strtr($s, array(
-        "\u{201e}GOVEE Lichtleiste\u{201c}" => "\u{201e}" . $vq . "\u{201c}",
-        "\u{201c}GOVEE Lichtleiste\u{201d}" => "\u{201c}" . $vq . "\u{201d}",
-        'GOVEE_1_' => 'GOVEE_' . $nr . '_',
-        'Lichtleiste' => $name,
-    ));
-}
-
-// Gezeigt wird die Leuchte mit der kleinsten Nummer (gv_geraete() ist danach sortiert).
-$gv_bsg = $gv_geraete ? reset($gv_geraete) : null;
-?>
-<div class="sm-step"><b>6. <?= gv_e(gv_t('LOX.S6_T')) ?></b><br>
-<?= gv_t('LOX.S6') ?>
-<?php foreach (gv_bausteinseiten() as $gv_bsei) { ?>
-<h4 class="sm-h4"><?= gv_e($gv_bsei['kopf']) ?></h4>
-<div class="sm-hinweis"><b><?= gv_e(gv_t('BAUSTEIN.SCHRITTE_TITEL')) ?></b>
-<ol class="sm-schritte">
-<?php foreach ($gv_bsei['schritte'] as $gv_bsx) { ?>
-<li><?= gv_e(gv_bs_text($gv_bsx, $gv_bsg)) ?></li>
-<?php } ?>
-</ol></div>
-<table class="sm-tbl">
-<tr><th style="width:28px;">#</th><th><?= gv_e(gv_t('LOX.B_TYP')) ?></th><th><?= gv_e(gv_t('LOX.B_NAME')) ?></th>
-    <th><?= gv_e(gv_t('LOX.B_PARAM')) ?></th><th><?= gv_e(gv_t('LOX.B_EIN')) ?></th></tr>
-<?php foreach ($gv_bsei['zeilen'] as $gv_bsi => $gv_bsz) {
-    $gv_bsc = array_pad(explode(' | ', $gv_bsz, 4), 4, ''); ?>
-<tr><td><?= (int) $gv_bsi + 1 ?></td><td><?= gv_e(gv_bs_text($gv_bsc[0], $gv_bsg)) ?></td><td><?= gv_e(gv_bs_text($gv_bsc[1], $gv_bsg)) ?></td>
-    <td><?= gv_e(gv_bs_text($gv_bsc[2], $gv_bsg)) ?></td><td><?= gv_e(gv_bs_text($gv_bsc[3], $gv_bsg)) ?></td></tr>
-<?php } ?>
-</table>
-<div class="sm-warnung"><b><?= gv_e(gv_t('BAUSTEIN.HINWEISE_TITEL')) ?></b>
-<ul class="sm-schritte">
-<?php foreach ($gv_bsei['hinweise'] as $gv_bsx) { ?>
-<li><?= gv_e(gv_bs_text($gv_bsx, $gv_bsg)) ?></li>
-<?php } ?>
-</ul></div>
-<figure class="sm-bild">
-<img src="<?= gv_e($gv_bsei['bild']) ?>" alt="<?= gv_e(gv_t('LOX.BILD_ALT')) ?>" loading="lazy">
-<figcaption><?= gv_e(sprintf(gv_t('LOX.BILD_UNTERSCHRIFT'), $gv_bsei['kopf'])) ?></figcaption>
-</figure>
-<div class="sm-hilfe"><?= gv_t('LOX.MUSTERPROJEKT') ?></div>
-<?php } ?>
-</div>
-
-<div class="sm-step"><b>7. <?= gv_e(gv_t('LOX.S7_T')) ?></b><br><?= gv_t('LOX.S7') ?></div>
+</details>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -1788,6 +1961,16 @@ if ($gv_mit_rest > 0) { ?>
 <div class="sm-pre"><?= gv_e($gv_testausgabe) ?></div>
 <?php } ?>
 
+<h3><?= gv_e(gv_t('BEFEHL.T_H')) ?></h3>
+<?php /* Gruppe 3 / MQTT (0.9.30): Lage der Befehlsbruecke (gv_bruecke_lage(), gemessen wie im Waechter) und die
+   Zeilen von befehlsbruecke.php --pruefen. */
+list($gv_bbl_ok, $gv_bbl_text) = gv_bruecke_lage(); ?>
+<div class="<?= $gv_bbl_ok === false ? 'sm-warnung' : 'sm-hinweis' ?>"><?= gv_e($gv_bbl_text) ?></div>
+<details><summary><?= gv_e(gv_t('BEFEHL.H_PRUEFEN')) ?></summary>
+<div class="sm-pre"><?= gv_e(implode("\n", gv_bruecke_pruefzeilen())) ?></div>
+</details>
+<div class="sm-hilfe"><?= gv_e(gv_t('BEFEHL.T_RETAINED')) ?></div>
+
 <h3><?= gv_e(gv_t('TEST.H_SCHALTEN')) ?></h3>
 <div class="sm-warnung"><?= gv_t('TEST.SCHALTEN_WARNUNG') ?></div>
 <?php if (empty($gv_cfg['steuerung_ein'])) { ?>
@@ -1812,7 +1995,7 @@ if ($gv_mit_rest > 0) { ?>
 
 <div class="sm-feld">
   <label for="test_hell"><?= gv_e(gv_t('TEST.L_HELL')) ?></label>
-  <input data-role="none" type="number" id="test_hell" name="test_hell" value="60" min="1" max="100">
+  <input data-role="none" type="number" id="test_hell" name="test_hell" value="60" min="0" max="100">
 </div>
 <div class="sm-feld">
   <label for="test_kelvin"><?= gv_e(gv_t('TEST.L_KELVIN')) ?></label>

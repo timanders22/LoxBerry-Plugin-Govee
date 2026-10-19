@@ -229,6 +229,16 @@ function gv_pruefungen()
     $zeilen[] = gv_pruefzeile_reiter();
     $zeilen[] = gv_pruefzeile_themen();
 
+    /* Gruppe 3 / MQTT (0.9.30): Namenstabelle gegen den Sendecode, Haken unter Gateway V2, Befehlsbruecke und die
+     * getrennte Warteschlange (E1; Eichung: Ordner zurueck auf befehle/ -> rot). */
+    list($gv_nst, $gv_ntx) = gv_mqtt_namen_probe();
+    $zeilen[] = gv_pruefzeile($gv_nst, gv_t('TEST.F_NAMEN'), $gv_ntx);
+    list($gv_vst, $gv_vtx) = gv_mqtt_v2_haken_lage();
+    $zeilen[] = gv_pruefzeile($gv_vst === 2 ? -1 : $gv_vst, gv_t('TEST.F_V2_HAKEN'), $gv_vtx);
+    list($gv_bst, $gv_btx) = gv_bruecke_lage();
+    $zeilen[] = gv_pruefzeile($gv_bst === null ? -1 : ($gv_bst ? 1 : 0), gv_t('TEST.F_BRUECKE'), gv_e($gv_btx));
+    $zeilen[] = gv_pruefzeile_warteschlange();
+
     /* Der eigene Endpunkt. Drei Ausgaenge sind Pflicht: geantwortet und
      * plausibel, geantwortet und falsch, NICHT FESTSTELLBAR - "ich kann es
      * nicht messen" darf nicht wie "in Ordnung" aussehen. */
@@ -508,11 +518,13 @@ function gv_pruefzeile_themen($dienst_quelle = null)
         'fehl' => 0, 'an' => 1, 'hell' => 50, 'kelvin' => 3000, 'r' => 1, 'g' => 2, 'b' => 3,
         'hex' => '010203'));
     $gesendet = array();
-    foreach (array_keys(gv_mqtt_paare($probe, array('ok' => 1, 'geraete' => 1, 'fehler_folge' => 0),
+    foreach (array_keys(gv_mqtt_paare($probe, array('ok' => 1, 'geraete' => 1, 'fehler_folge' => 0, 'zaehler' => 0),
                                       $cfg, $jetzt)) as $k) {
         $gesendet[preg_replace('#^geraet1/#', 'geraetN/', $k)] = true;
     }
     $tabelle = gv_mqtt_themen();
+    /* status/befehle sendet die Befehlsbruecke (bb_status_senden()), nicht gv_mqtt_paare() - ausgenommen (0.9.30). */
+    unset($tabelle['status/befehle']);
     if (!$gesendet || !$tabelle) {
         /* Ueber eine leere Menge wird nicht geurteilt. */
         return gv_pruefzeile(-1, gv_t('TEST.F_THEMEN'), gv_t('TEST.A_THEMEN_UNBEKANNT'));
@@ -630,7 +642,7 @@ function gv_pruefzeile_vorlagen()
     $vorher = libxml_use_internal_errors(true);
     foreach (array_keys($geraete) as $nr) {
         foreach (array('gv_vorlage_ausgang', 'gv_vorlage_szenen', 'gv_vorlage_eingang',
-                       'gv_vorlage_lox') as $f) {   // die Sammelvorlage danach, sie kennt keine Nummer
+                       'gv_vorlage_lox', 'gv_vorlage_mqtt_befehle') as $f) {   // die Sammelvorlage danach, sie kennt keine Nummer
             list($name, $inhalt) = $f($nr);
             if ($inhalt === '') {
                 continue;   // fuer dieses Geraet nicht vorgesehen
@@ -753,7 +765,8 @@ function gv_test_aktion($aktion)
 
         case 'hell':
             $w = $hol('test_hell');
-            if (!preg_match('/^[0-9]{1,3}$/', $w) || (int) $w < 1 || (int) $w > 100) {
+            /* Seit 0.9.30 auch 0: 0 schaltet aus (gv_nachricht_bauen, wie der Endpunkt; Text TEST.L_HELL). */
+            if (!preg_match('/^[0-9]{1,3}$/', $w) || (int) $w > 100) {
                 return array(0, gv_t('TEST.M_HELL_UNGUELTIG'));
             }
             return gv_befehl_absetzen(array('aktion' => 'hell', 'geraet' => (int) $nr, 'wert' => (int) $w));
@@ -963,4 +976,24 @@ function gv_balken_svg($prozent, $pixel, $hex = '646400')
               . gv_e($farbe) . '" stroke="#cccccc" stroke-width="1"/>';
     }
     return $svg . '</svg>';
+}
+
+
+/**
+ * Liegt die Warteschlange getrennt vom Ordner der Befehlsbruecke? (Gruppe 3 / MQTT, E1) Die Bruecke fuehrt fest
+ * data/plugins/<ordner>/befehle/ (bb_pfade()); der Dienst loescht jede *.json seiner Warteschlange. $ordner nur fuer
+ * die Eichung.
+ */
+function gv_pruefzeile_warteschlange($ordner = null)
+{
+    if ($ordner === null) {
+        $ordner = gv_warteschlange_ordner();
+    }
+    $bb = gv_paths()['datadir'] . '/befehle';
+    if (rtrim($ordner, '/') === rtrim($bb, '/')) {
+        return gv_pruefzeile(0, gv_t('TEST.F_WARTESCHLANGE'), sprintf(gv_t('TEST.A_WS_FEHL'), gv_e($ordner)));
+    }
+    return gv_pruefzeile(1, gv_t('TEST.F_WARTESCHLANGE'),
+        sprintf(gv_t('TEST.A_WS_OK'), '<span class="sm-mono">' . gv_e(basename($ordner)) . '/</span>',
+                '<span class="sm-mono">' . gv_e(basename($bb)) . '/</span>'));
 }

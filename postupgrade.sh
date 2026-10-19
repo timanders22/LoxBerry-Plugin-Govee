@@ -121,5 +121,15 @@ if [ "$SOLL" -eq 1 ] && [ -f "$DIENST" ]; then
 else
     echo "<INFO> Der Dienst lief vor dem Upgrade nicht und bleibt angehalten."
 fi
+# ---------- Befehlsbruecke (Gruppe 3 / MQTT, 0.9.30; Brueckenbericht 6) ----------
+# Die Marke faellt sonst erst per trap am Ende - befehlsbruecke.sh start verweigerte den Start, solange sie liegt.
+# Deshalb hier ausdruecklich weg, dann start: startet nur bei Haken "Befehle ueber MQTT annehmen", nie als root,
+# nie zweimal (Sperre und argumentweise Probe im Startskript).
+gv_marke_weg
+GV_BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$GV_BBSH" ]; then
+    GV_BBAUS=$(/bin/bash "$GV_BBSH" start 2>&1)
+    echo "<INFO> Befehlsbruecke: $GV_BBAUS"
+fi
 echo "<OK> postupgrade abgeschlossen."
 exit 0

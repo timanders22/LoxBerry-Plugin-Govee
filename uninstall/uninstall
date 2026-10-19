@@ -14,6 +14,14 @@
 # aus dem eigenen Ablageort abgeleitet - installiert ist das data/system, der
 # Ordnername wurde "system" (am Geraet so errechnet, 17.09.2026). Der Dienst
 # wurde dann nicht angehalten, und die Sicherungen unten blieben liegen.
+# Praefixschutz (Gruppe 3 / MQTT, 0.9.30; Gedaechtnis uninstall-praefix-trifft-fremdes-plugin): plugininstall.pl
+# fuehrt beim Deinstallieren JEDES data/system/uninstall/$pname* aus - auch dieses, wenn ein anderes Plugin
+# deinstalliert wird, dessen NAME mit "govee" beginnt; $2 ist dann DESSEN Name. Dann gehoert der Lauf nicht
+# uns: nichts tun.
+if [ -n "$2" ] && [ "$2" != "govee" ]; then
+    echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'govee' und tut nichts."
+    exit 0
+fi
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
@@ -171,6 +179,50 @@ fi
 # Der zweite Name stammt aus 0.9.8 und wird nur noch weggeraeumt.
 # Dazu die .alt, die postinstall.sh bei einer Neuinstallation beiseitelegt
 # (Entscheidung 1 vom 29.09.2026).
+# ---------- Befehlsbruecke (Gruppe 3 / MQTT, 0.9.30; Muster vb_g1_bruecke_bau/beispiel/uninstall) ----------
+# 1. anhalten (stop beendet Dienst UND mosquitto_sub, auch ein verwaistes); 2. argumentweise nachzaehlen;
+# 3. Optionsdateien mit dem Broker-Kennwort ueberschreiben, dann befehle/ entfernen (der Datenordner faellt
+# unten ohnehin) und nachzaehlen.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PFOLDER/befehle"
+if [ -f "$BBSH" ]; then
+    timeout 40 bash "$BBSH" stop >/dev/null 2>&1
+fi
+bb_rest=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    if [ "${#a[@]}" -eq 2 ] && [ "${a[1]}" = "$BBPHP" ] && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null
+        bb_rest=$((bb_rest + 1))
+    fi
+done
+bb_abos=0
+for d in /proc/[0-9]*; do
+    read -r c 2>/dev/null < "$d/comm" || continue
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        if [ "$x" = "XDG_CONFIG_HOME=$BBDIR/mosquitto" ]; then kill -9 "${d#/proc/}" 2>/dev/null; bb_abos=$((bb_abos + 1)); fi
+    done
+done
+[ "$bb_rest" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $bb_rest Dienst(e) erst mit kill -9 beendet."
+[ "$bb_abos" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $bb_abos mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$f" ]; then
+            n=$(stat -c %s "$f" 2>/dev/null || echo 64)
+            head -c "$n" /dev/zero > "$f" 2>/dev/null
+        fi
+    done
+    rm -rf "$BBDIR"
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+else
+    echo "<OK> Befehlsbruecke angehalten, Zugangsdaten der Befehlsbruecke entfernt."
+fi
+
 GV_SB="$BASE/config/plugins/$PFOLDER.backup"
 for gv_f in "$GV_SB.json" "$GV_SB.govee.json" "$GV_SB.geheim.json" \
             "$GV_SB.json.alt" "$GV_SB.govee.json.alt" "$GV_SB.geheim.json.alt"; do

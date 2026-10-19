@@ -3,9 +3,38 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.29 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.30 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.30
+
+Umstellung auf MQTT (Gruppe 3): Werte und Befehle zwischen Plugin und Loxone gehen über das MQTT-Gateway. Der Weg über
+HTTP bleibt für bestehende Anlagen.
+
+* **Werte über MQTT, ohne Importvorlage.** Der Reiter „Einbindung in Loxone“ zeigt je Leuchte eine **Namenstabelle**
+  (Name in Loxone, Thema, Bedeutung, Bereich, mit Kopierknopf): in Loxone Config je Wert einen **Virtuellen Eingang**
+  mit genau diesem Namen anlegen, etwa `govee_geraet1_hell`. Unter Gateway V2 nennt der Reiter die Datenpunkte zum
+  Anhaken (Hakenliste); unter V1 bringt das Plugin das Abo `govee/#` selbst mit (`config/mqtt_subscriptions.cfg`,
+  beim Speichern des Reiters MQTT auf das Präfix nachgeführt).
+* **Neues Lebenszeichen `govee/status/zaehler`**: ein Rundenzähler 0–999 des Abrufdienstes, eins weiter je Runde. Auch
+  `ZAEHLER` am HTTP-Endpunkt ist jetzt dieser Zähler (bisher Zeitstempel modulo 1000 – bei einem Abfragetakt von
+  1000 s stand er nahezu still). Die Ausfallerkennung der Musterseite „Govee“ hängt an `govee_status_zaehler`.
+* **Befehle über MQTT (Befehlsbrücke).** `govee/befehl/geraet<N>/schalten|helligkeit|kelvin|farbe|szene|balken` (oder
+  `…/alle/…`) und `govee/befehl/abruf`; Antwort auf `…/quittung`. Zwei Haken, beide ab Werk aus: „Befehle über MQTT
+  annehmen“ (Reiter MQTT) und für alles Schaltende der vorhandene „Schreibende Befehle zulassen“. Die Brücke ruft
+  dieselbe Funktion wie der HTTP-Endpunkt; die Befehlsbremse (60 s) gilt für beide Wege. Neue Vorlage „Govee
+  MQTT-Befehle“ je Leuchte; Lebenszeichen `govee/status/befehle`.
+* **-1 statt „nichts“ bzw. „-“**: liefert eine antwortende Leuchte an, hell, kelvin, r, g oder b nicht, geht -1 hinaus –
+  über MQTT und HTTP. Die HTTP-Zustandsvorlage erlaubt dafür MinVal -1 (Farbtemperatur -1 bis 10000). **Bestehende
+  HTTP-Anlagen:** neu einlesen ist nicht nötig, wer an den sechs Befehlen MinVal von Hand auf -1 setzt.
+* **Warteschlange verlegt** nach `data/plugins/govee/warteschlange/` (der Ordner `befehle/` gehört jetzt der
+  Befehlsbrücke). Beim Upgrade liegengebliebene alte Aufträge werden verworfen, nicht ausgeführt.
+* **Musterprojekt:** Seite „Govee“ mit 20 Bausteinen (neu: „Befehlsweg (Govee)“), Farbe, Szene und Balken auf „Govee
+  Licht“/„Govee Szenen und Balken“ über den gemeinsamen Ausgang „LoxBerry MQTT-Gateway“. Wer die Seiten nach 0.9.29
+  nachgebaut hat, ersetzt den virtuellen HTTP-Eingang durch die Virtuellen Eingänge der Namenstabelle.
+* Texte: Helligkeit 0 schaltet aus (Reiter Test, Vorlage); „das Gateway legt die Eingänge selbst an“ und „lebt bleibt
+  stehen, während ts altert“ berichtigt.
 
 ## Neu in 0.9.29
 
@@ -505,7 +534,7 @@ alle vier bestanden.
 | | |
 |---|---|
 | **Gerätesuche** | Multicast 239.255.255.250:4001, findet alle Leuchten mit eingeschaltetem LAN Control samt SKU, Gerätekennung und Firmwarestand |
-| **Zustand lesen** | `devStatus` je Gerät: ein/aus, Helligkeit, Farbtemperatur, RGB — veröffentlicht über das MQTT-Gateway und abrufbar über einen Token-Endpunkt |
+| **Zustand lesen** | `devStatus` je Gerät: ein/aus, Helligkeit, Farbtemperatur, RGB — veröffentlicht über das MQTT-Gateway (in Loxone Virtuelle Eingänge, Namen aus der Namenstabelle) und abrufbar über einen Token-Endpunkt |
 | **Grundbefehle** | ein, aus, Helligkeit 1–100, Farbe RGB, Farbtemperatur in Kelvin |
 | **Szenen** | 14 aufgezeichnete Szenen für H70C4, H6076 und RGBIC-Streifen, über den nicht dokumentierten `ptReal`-Befehl |
 | **Segmente und Pixel** | zwei Verfahren: *Graffiti* spricht einzelne Pixel an (an der H6076 gemessen), *Bitmaske* ganze Segmente (Form der H70C4) — welches die eigene Leuchte versteht, sagt der Versuch |
@@ -513,7 +542,7 @@ alle vier bestanden.
 | **Musikbetrieb** | vier Befehlsgruppen, weil die Form je Modellreihe abweicht |
 | **Cloud** | offizielle Entwicklerschnittstelle mit API-Schlüssel, nur für Geräte ohne LAN Control |
 | **Eigene Szenen** | wer die Befehlsfolge seiner eigenen Leuchte kennt, hinterlegt sie selbst; geprüft wird sie beim Speichern auf Länge und Prüfsumme |
-| **Loxone-Vorlagen** | fertige XML-Importdateien: virtueller Ausgang für Grundbefehle, virtueller Ausgang für Szenen und Balken, **virtueller Ausgang über den LoxBerry mit stufenlosen Analogwerten**, virtueller Eingang für den Zustand |
+| **Loxone-Vorlagen** | fertige XML-Importdateien: virtueller Ausgang für Grundbefehle, virtueller Ausgang für Szenen und Balken, **virtueller Ausgang über den LoxBerry mit stufenlosen Analogwerten**, virtueller Eingang für den Zustand, **virtueller Ausgang „Govee MQTT-Befehle“** an das MQTT-Gateway |
 | **Ausfallerkennung** | `OK` und `ALTER` werden zur Abrufzeit gerechnet, dazu ein Zähler fehlgeschlagener Abrufe in Folge, das Lebenszeichen `ZAEHLER` des Abrufdienstes und ein Herzschlag über MQTT |
 | **Diagnose** | Trockenlauf (zeigt, *was* ein Befehl sendet, ohne ihn zu senden), zeitlich begrenzter Mitschnitt des UDP-Verkehrs, Rohantwort je Leuchte |
 | **Gruppen** | `geraet=alle` schaltet alle eingerichteten Leuchten und liest sie in einem Abruf |
@@ -588,9 +617,11 @@ RGBIC-Streifen.
 
 ## Einbindung in Loxone
 
-Der Reiter *Einbindung in Loxone* führt in sieben Schritten durch beide Richtungen, mit den fertigen
-Importdateien je Leuchte (Zustand, Grundbefehle, Szenen und Balken, stufenlos über den LoxBerry) und in
-Schritt 6 den **Baustein-Listen** der drei Seiten zum Nachbauen. Fertig verbunden stehen die Bausteine auf den
+Der Reiter *Einbindung in Loxone* führt in acht Schritten durch beide Richtungen: Werte über MQTT (Gateway
+V1/V2, Namenstabelle für die Virtuellen Eingänge, Ausfallerkennung am Lebenszeichen), Befehle über MQTT
+(Befehlsbrücke, Vorlage „Govee MQTT-Befehle“), die Vorlagen unmittelbar an die Leuchte (Grundbefehle, Szenen
+und Balken) und in Schritt 7 die **Baustein-Listen** der drei Seiten zum Nachbauen. Der Weg über HTTP
+(Zustandsvorlage, stufenlos über den LoxBerry, Token) steht zugeklappt für bestehende Anlagen darunter. Fertig verbunden stehen die Bausteine auf den
 Seiten „Govee“, „Govee Licht“ und „Govee Szenen und Balken“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) – die ganze
 Projektdatei mit allen Plugin-Seiten und Vorlagen.
@@ -614,7 +645,7 @@ bestehende Suchmuster in Loxone gültig bleiben:
   `r*65536 + g*256 + b`. Das ist der Weg für einen virtuellen Ausgang: ein
   `<v.0>` trägt genau **einen** Analogwert, drei Farbkanäle passen anders
   nicht durch.
-* `hell` mit `wert=0` schaltet **aus**, statt auf die kleinste Stufe zu gehen.
+* `hell` mit `wert=0` schaltet **aus**.
   Auf dem unmittelbaren UDP-Weg geht das nicht — dort erreicht der Rohwert
   die Leuchte, ohne dass das Plugin ihn sieht.
 * Jede schaltende Aktion nimmt `geraet=alle` und geht dann an jede
@@ -622,7 +653,7 @@ bestehende Suchmuster in Loxone gültig bleiben:
 
 Die Statuszeile trägt hinten zusätzlich `FEHL` — die Zahl der Abrufe in Folge,
 bei denen dieses Gerät nicht geantwortet hat. Seit 0.9.27 folgt `ZAEHLER`, das
-Lebenszeichen des Abrufdienstes (Zeitstempel der letzten Dienstrunde modulo
+Lebenszeichen des Abrufdienstes (seit 0.9.30 ein Rundenzähler 0–999; davor Zeitstempel der letzten Dienstrunde modulo
 1000, -1 wenn der Dienst noch nie lief); es steht auch in der Zeile für ein
 unbekanntes Gerät und im Kopf der Sammelzeile.
 
@@ -638,7 +669,7 @@ verglichen. Schaltende Aufrufe sind ab Werk gesperrt; rohe `ptReal`-Befehle
 brauchen einen zweiten, eigenen Haken. Was nicht ins Muster passt, wird
 abgewiesen und gemeldet — nie stillschweigend zurechtgebogen.
 
-Fehlt ein Einzelwert, sendet der Endpunkt einen Strich statt einer erfundenen
+Fehlt ein Einzelwert, sendet der Endpunkt seit 0.9.30 -1 (davor einen Strich) statt einer erfundenen
 Null. Eine Null wäre eine stille Falschaussage, und in der Loxone-App sähe
 alles normal aus.
 

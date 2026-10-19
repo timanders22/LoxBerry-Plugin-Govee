@@ -293,6 +293,15 @@ gv_sichern "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" config "Konfigurati
 # Konfigordner ab, und eine nie mitgelieferte Datei steht auf keiner Liste),
 # und die Deinstallation loescht die Sicherung ausdruecklich mit. Genau dafuer
 # gibt es uninstall/uninstall.
+# ---------- Befehlsbruecke anhalten (Gruppe 3 / MQTT, 0.9.30) ----------
+# Die Marke "Aktualisierung laeuft" liegt schon (oben, als Erstes) - der Waechter startet die Bruecke waehrend
+# des Upgrades nicht neu; postupgrade.sh startet sie danach (nur bei Haken an). Eine alte Fassung ohne Bruecke
+# hat das Skript nicht: dann ist nichts anzuhalten.
+GV_BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$GV_BBSH" ]; then
+    GV_BBAUS=$(timeout 40 /bin/bash "$GV_BBSH" stop 2>&1)
+    echo "<INFO> Befehlsbruecke: $GV_BBAUS"
+fi
 echo "<OK> preupgrade abgeschlossen."
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====

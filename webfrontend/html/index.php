@@ -39,9 +39,11 @@
  * den Antwortport 4002 haelt der Dienst. Lesende Aufrufe beantwortet er aus
  * dem Zwischenspeicher, schaltende legt er in einer Warteschlange ab.
  *
- * Ein Strich als Wert bedeutet: dieses Feld wurde nicht geliefert. Es wird
- * bewusst keine 0 gesendet - eine 0 waere eine stille Falschaussage, und in
- * der Loxone-App saehe alles normal aus.
+ * -1 als Wert bedeutet seit 0.9.30: dieses Feld wurde nicht geliefert (bis
+ * 0.9.29 ein Strich; HEX bleibt ein Strich, es ist Text). Es wird bewusst keine
+ * 0 gesendet - eine 0 waere eine stille Falschaussage, und in der Loxone-App
+ * saehe alles normal aus. Schaltende Aktionen nimmt gv_befehl_annehmen() an -
+ * dieselbe Funktion ruft die Befehlsbruecke (Befehle ueber MQTT).
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -157,11 +159,12 @@ $gv_verf     = gv_param('verfahren', '/^(graffiti|maske)$/', 'graffiti');
 $gv_segmente = gv_param('segmente', '/^[0-9a-fA-F:,\-]{1,300}$/', '');
 $gv_ptcmd    = gv_param('cmd',      '#^[A-Za-z0-9+/=,]{1,2000}$#', '');
 
-/** Ein Strich statt einer erfundenen 0. Loxone behaelt dann den letzten Wert. */
+/** -1 statt einer erfundenen 0 (seit 0.9.30, -1-Regel, Entwurf gv E2; bis 0.9.29 ein Strich, dann behielt Loxone
+ *  den letzten Wert). -1 heisst "die Leuchte meldet es nicht"; die Vorlage "Zustand" laesst MinVal -1 zu. */
 function gv_w($v)
 {
     if ($v === null || $v === '' || !is_numeric($v)) {
-        return '-';
+        return '-1';
     }
     return (string) (0 + $v);
 }
@@ -251,7 +254,8 @@ if ($gv_aktion === 'status') {
 
 /* ================= Schaltende Aktionen ================= */
 
-if (!in_array($gv_aktion, array('abruf', 'suche'), true) && empty($gv_cfg['steuerung_ein'])) {
+/* Seit 0.9.30 ueber gv_befehl_gesperrt() - dieselbe Frage stellt gv_befehl_annehmen() fuer die Befehlsbruecke. */
+if (gv_befehl_gesperrt($gv_aktion, $gv_cfg)) {
     http_response_code(403);
     echo "SET;OK=0;GRUND=STEUERUNG_AUS\n";
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
@@ -353,53 +357,33 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
     $gv_befehl['cmd'] = explode(',', $gv_ptcmd);
 }
 
-/* Erst jetzt die Frage nach dem Dienst. Sie steht ABSICHTLICH hinter der
- * Pruefung der Parameter: wer einen gesperrten oder falsch geschriebenen
- * Befehl schickt, soll das erfahren und nicht "Der Dienst laeuft nicht" -
- * sonst sucht er an der falschen Stelle. */
-if (!gv_dienst_laeuft()) {
-    /* Nicht stillschweigend einreihen: ohne laufenden Dienst passiert nichts.
-     * Gefragt wird die Sperre des Dienstes, nicht die PID-Datei (C3): nach
-     * einem Doppelstart fehlte sie, und jeder Schaltbefehl bekam 503, obwohl
-     * der Dienst lief (govee_agenten/code, Befund 2). */
+/* Erst jetzt Dienst, Befehlsbremse und Warteschlange - seit 0.9.30 in gv_befehl_annehmen() (gv_lib.php), dieselbe
+ * Funktion, die die Befehlsbruecke mit Quelle 'mqtt' ruft (Gruppe 3 / MQTT, Entwurf gv 3.2). Reihenfolge, Antworten und
+ * HTTP-Codes sind unveraendert:
+ *   - die Frage nach dem Dienst steht ABSICHTLICH hinter der Pruefung der Parameter: wer einen gesperrten oder falsch
+ *     geschriebenen Befehl schickt, soll das erfahren und nicht "Der Dienst laeuft nicht";
+ *   - ohne laufenden Dienst wird nichts eingereiht (503); gefragt wird die Sperre des Dienstes, nicht die PID-Datei (C3);
+ *   - Befehlsbremse (X-7, Entscheidung 19): derselbe Sollwert an dieselbe Leuchte binnen 60 s geht nicht erneut hinaus
+ *     (UNVERAENDERT=1), kein 429; laesst sich ihr Merker nicht oeffnen, faellt sie geschlossen aus (503). */
+$gv_r = gv_befehl_annehmen($gv_befehl, $gv_cfg, 'http');
+if ($gv_r['grund'] === 'DIENST_LAEUFT_NICHT') {
     http_response_code(503);
     echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
     echo "Der Abrufdienst laeuft nicht. Reiter Einstellungen, Knopf 'Dienst starten'.\n";
     exit;
 }
-
-/* ---------------- Befehlsbremse (X-7, Entscheidung 19) ----------------
- *
- * Derselbe Sollwert an dieselbe Leuchte innerhalb von 60 s geht nicht erneut
- * hinaus (UNVERAENDERT=1), kein 429. Sie steht HINTER der Frage nach dem
- * Dienst: laeuft er nicht, bleibt es bei 503 - ein "unveraendert" wuerde den
- * Ausfall verdecken. Laesst sich der Merker nicht oeffnen, faellt sie
- * geschlossen aus (503). Die Ziele kommen aus der ungeheilten Konfiguration
- * dieses Endpunkts. Vorbild EVCC 0.9.37. */
-$gv_bremse = gv_bremse_pruefen($gv_befehl, $gv_cfg);
-if ($gv_bremse['stand'] === 'merker') {
-    gv_log_gebremst('bremse_merker', 'Die Merkerdatei der Befehlsbremse unter '
-        . gv_paths()['datadir'] . ' laesst sich nicht oeffnen - ein, aus, hell, kelvin und farbe '
-        . 'werden mit 503 abgewiesen, bis das behoben ist. Pruefen: Platz und Eigentuemer (loxberry).');
+if ($gv_r['grund'] === 'BREMSE_MERKER') {
     http_response_code(503);
     echo 'SET;OK=0;AKTION=' . $gv_aktion . ";GRUND=BREMSE_MERKER\n";
     exit;
 }
-if ($gv_bremse['stand'] === 'gleich') {
+if ($gv_r['unveraendert']) {
     printf("SET;OK=1;AKTION=%s;UNVERAENDERT=1;MELDUNG=Derselbe Wert ging vor %d s hinaus - nicht erneut gesendet.\n",
-        $gv_aktion, (int) $gv_bremse['seit']);
+        $gv_aktion, (int) $gv_r['seit']);
     exit;
 }
-
-list($gv_erg, $gv_meldung) = gv_befehl_absetzen($gv_befehl);
-if ($gv_erg === 0) {
-    http_response_code(500);
+if ($gv_r['http'] !== 200) {
+    http_response_code($gv_r['http']);
 }
-/* Gemerkt wird nur, was der Dienst bestaetigt hat (1). Scheitert das
- * Schreiben, wirkt der Befehl trotzdem - aber das steht im Protokoll. */
-if ($gv_erg === 1 && !gv_bremse_merken($gv_befehl, $gv_cfg)) {
-    gv_log_gebremst('bremse_schreiben', 'Die Merkerdatei der Befehlsbremse liess sich nicht schreiben - '
-        . 'die Bremse erkennt den letzten Befehl nicht.');
-}
-printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $gv_erg, $gv_aktion,
-    str_replace(array("\r", "\n", ';'), ' ', $gv_meldung));
+printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $gv_r['ok'], $gv_aktion,
+    str_replace(array("\r", "\n", ';'), ' ', $gv_r['meldung']));
