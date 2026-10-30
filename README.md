@@ -3,9 +3,19 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.30 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.31 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.31
+
+Pflegefassung: die Befehlsbrücke auf dem Hausstand. Werte, Themen, Befehle, Vorlagen und Einstellungen bleiben, wie sie
+sind.
+
+* **Befehlsbrücke 1.0.2** (bisher 1.0.0, gemeinsames Modul `bin/befehlsbruecke.php`): `stop` legt als root nichts mehr
+  an, `befehle_start.log` wird gekappt, eine leere Uhr startet den Dienst nicht, der Befehlsordner ist nur für das
+  Plugin lesbar (0700). Die Vorlage „Govee MQTT-Befehle“ baut das Plugin selbst; sie hatte schon Windows-Zeilenenden.
+* Der Selbsttest der Haken für Gateway V2 im Reiter Test ist unverändert.
 
 ## Neu in 0.9.30
 
