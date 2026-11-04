@@ -411,6 +411,8 @@ function gv_abbild_schreiben($treffer, $gefragt)
              * hier entfernt, damit nicht zwei Wahrheiten nebeneinander stehen. */
             unset($eintrag['alter']);
         }
+        /* Die Leuchte als Ansage: drei Fehlversuche in Folge und 30 Minuten Dauer; der Name des Nutzers, nie SKU oder Adresse. */
+        if ($z !== null || isset($gefragt[$nr])) { gv_ansage_flanke('geraet', !empty($eintrag['fehl']) && (int) $eintrag['fehl'] >= 3, (string) $g['name'] !== '' ? (string) $g['name'] : (string) $nr, 1800); }
         $neu[$nr] = $eintrag;
     }
 
@@ -872,7 +874,8 @@ $gv_letzte_cloud = 0;
 $gv_runden = 0;
 
 do {
-    $cfg = gv_config();
+    /* bis 0.9.31 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+    $gv_lauf_cfg = gv_config();
     $jetzt = time();
 
     /* Eine Schleife, ein Abbild, ein Versand (M6): faellt der Cloud-Takt in
@@ -882,7 +885,7 @@ do {
     $gv_treffer = array();
     $gv_gefragt = array();
     $gv_lan_lief = false;
-    if ($jetzt - $gv_letzte_runde >= max(5, (int) $cfg['intervall'])) {
+    if ($jetzt - $gv_letzte_runde >= max(5, (int) $gv_lauf_cfg['intervall'])) {
         $gv_letzte_runde = $jetzt;
         $gv_alle = gv_geraete();
         $gv_treffer = gv_runde($gv_horcher, $gv_alle, 2);
@@ -890,12 +893,12 @@ do {
         $gv_lan_lief = true;
     }
 
-    if ((int) $cfg['suchtakt'] > 0 && $jetzt - $gv_letzte_suche >= (int) $cfg['suchtakt'] * 60) {
+    if ((int) $gv_lauf_cfg['suchtakt'] > 0 && $jetzt - $gv_letzte_suche >= (int) $gv_lauf_cfg['suchtakt'] * 60) {
         $gv_letzte_suche = $jetzt;
         gv_befehl_ausfuehren(array('aktion' => 'suche'), $gv_horcher);
     }
 
-    if (!empty($cfg['cloud_ein']) && $jetzt - $gv_letzte_cloud >= max(1, (int) $cfg['cloud_takt']) * 60) {
+    if (!empty($gv_lauf_cfg['cloud_ein']) && $jetzt - $gv_letzte_cloud >= max(1, (int) $gv_lauf_cfg['cloud_takt']) * 60) {
         $gv_letzte_cloud = $jetzt;
         if (gv_cloud_sperre_lesen() > $jetzt) {
             /* Ein uebersprungener Lauf ist KEIN Fehler: er ruehrt den Zustand
@@ -905,6 +908,7 @@ do {
                 . date('H:i:s', gv_cloud_sperre_lesen()) . ' wird nicht abgerufen.', 600);
         } else {
             list($antwort, $meldung) = gv_cloud_geraete();
+            gv_ansage_flanke('konto', $antwort === null, '', 1800);     // eine Kontingentsperre (oben) ist kein Ausfall
             if ($antwort === null) {
                 gv_log_gebremst('cloud', 'Cloud: ' . $meldung);
             } else {

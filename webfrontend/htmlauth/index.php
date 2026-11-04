@@ -150,6 +150,19 @@ if ($gv_post && isset($_POST['vorlage'])) {
 }
 
 /* ---------------- Sicherung herunterladen ---------------- */
+/* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($gv_post && isset($_POST['ansage_test'])) {
+    list($gv_at, $gv_ag) = gv_ansage_test();
+    if ($gv_at) { $gv_meldungen[] = gv_e(gv_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $gv_fehler[] = gv_e(gv_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $gv_ag); }
+    $gv_tab = 'tab-settings';
+}
+if ($gv_post && isset($_POST['ansage_speichern'])) {
+    list($gv_ao, $gv_af, $gv_ah) = gv_ansage_post($_POST);
+    if ($gv_af) { foreach ($gv_af as $gv_ax) { $gv_fehler[] = gv_e($gv_ax); } }
+    elseif ($gv_ao) { $gv_meldungen[] = gv_e(trim(gv_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $gv_ah))); }
+    else { $gv_fehler[] = gv_e(gv_t('ANSAGEPLUGIN.M_FEHL')); }
+    $gv_tab = 'tab-settings';
+}
 if ($gv_post && isset($_POST['sicherung_holen'])) {
     /* Der Cloud-Schluessel gehoert MIT in die Datei (Hausstandard,
      * 25.08.2026). Bis 0.9.9 blieb er bewusst draussen - mit der
@@ -1290,6 +1303,7 @@ if ($gv_cliste) { ?>
 </form>
 <?php $gv_cfg = $gv_cfg_gespeichert; ?>
 
+<?= gv_ansage_form_html('<input data-role="none" type="hidden" name="fmt" value="' . gv_e($gv_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= gv_e(gv_t('EINST.H_SICHERUNG')) ?></h2>
 <div class="sm-hinweis"><?= gv_t('EINST.SICHERUNG_ERKLAERUNG') ?></div>
 <div class="sm-legende">
