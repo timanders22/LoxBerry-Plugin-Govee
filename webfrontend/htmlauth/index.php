@@ -140,6 +140,7 @@ if ($gv_post && isset($_POST['vorlage'])) {
         $gv_fehler[] = gv_t('LOX.FEHLER_VORLAGE');
         $gv_tab = 'tab-loxone';
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/xml; charset=utf-8');
         // Die Anfuehrungszeichen um den Dateinamen sind Pflicht: ohne sie
         // bricht jeder Name, der ein Leerzeichen enthaelt.
@@ -181,6 +182,7 @@ if ($gv_post && isset($_POST['sicherung_holen'])) {
         $gv_fehler[] = gv_t('EINST.FEHLER_SICHERUNG');
         $gv_tab = 'tab-settings';
     } else {
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="govee-' . date('Ymd-Hi') . '.json"');
         echo $gv_js;
