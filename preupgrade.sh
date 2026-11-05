@@ -16,6 +16,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
+# 0.9.34: dieselbe Pruefung wie MGiSmart und Bewaesserung - ein Ordnername mit "/" oder "." waere ein Pfad hinaus.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angelegt."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
@@ -43,7 +47,10 @@ gv_wurzel_suchen() {
     return 1
 }
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+# 0.9.34: general.json wird auch von $5 und $LBHOMEDIR verlangt; bis 0.9.33 nur von der Suche (ein fremder Baum mit den
+# beiden Ordnern galt als Wurzel).
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
     BASE=$(gv_wurzel_suchen "$SELF") || BASE=""
 fi
 if [ -z "$BASE" ]; then
@@ -52,7 +59,10 @@ if [ -z "$BASE" ]; then
     echo "<WARNING> traegt kein Verzeichnis config/plugins, data/plugins und"
     echo "<WARNING> config/system/general.json. Es wurde nichts angelegt, nichts"
     echo "<WARNING> gesichert und kein Dienst angehalten."
-    exit 1
+    # 0.9.34: exit 2, nicht 1. Rueckgabewert 1 ist fuer plugininstall.pl nur eine Fehlerzeile, gleich danach folgt
+    # purge_installation (Begruendung in Bewaesserung, preupgrade.sh; plugininstall.pl :854-864, :872-874): "nichts
+    # gesichert" und dann der Purge waere genau der Verlust, vor dem diese Zeilen warnen.
+    exit 2
 fi
 
 # ---------- Zuerst die Marke "Aktualisierung laeuft" ----------
@@ -75,12 +85,17 @@ fi
 # sie nur, solange sie hoechstens eine Stunde alt ist.
 mkdir -p "$BASE/data/plugins" 2>/dev/null
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
-date +%s > "$MARKE" 2>/dev/null
-if [ -s "$MARKE" ]; then
+# 0.9.34: ohne Marke haelt preinstall.sh das Update fuer eine Neuinstallation und legt die Zweitschriften beiseite,
+# postinstall.sh spielt nichts zurueck. Deshalb Abbruch mit rc 2, VOR purge_installation (Bauart MGiSmart 1.1.28); die
+# Umlenkung in { } faengt auch die Meldung der Schale. Bis 0.9.33 stand hier nur eine Warnung.
+{ date +%s > "$MARKE"; } 2>/dev/null
+if grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     echo "<OK> Dienststart bis zum Ende der Aktualisierung gesperrt."
 else
-    echo "<WARNING> Die Marke $MARKE liess sich nicht anlegen - der Dienst"
-    echo "<WARNING> koennte waehrend der Aktualisierung anlaufen."
+    rm -f "$MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
 
 # Ob der Dienst nach dem Upgrade wieder anlaufen soll, muss HIER festgehalten
@@ -260,23 +275,46 @@ gv_inhalt() {   # $1 Datei, $2 Art
 # Faelle Z1/Z2). Eine Datei ohne Inhalt laesst die vorhandene Sicherung
 # unberuehrt; ist der Inhalt nicht pruefbar, wird nur gesichert, wo noch
 # keine Sicherung liegt.
+#
+# 0.9.34: Ein Fehlschlag bei einer Datei MIT Inhalt wird gesammelt (GV_SICH_FEHL); nach beiden Sicherungen faellt die
+# Marke, und das Skript endet mit exit 2, damit purge_installation nichts anruehrt (Schluss der Datei). Bis 0.9.33
+# stand hier eine <WARNING>, exit 0 meldete Erfolg, und der Purge loeschte das Original.
+GV_SICH_FEHL=""
+# 0.9.34: atomar, Bauart Weatherdata 0.9.4 (wd_hinlegen) und MGiSmart: die Kopie entsteht als <Ziel>.neu.<pid>, traegt
+# 0600 BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann mit mv an ihren Platz gestellt. Bis 0.9.33 stand
+# hier cp -p auf das Ziel: scheiterte es mittendrin, war die heile Zweitschrift bzw. Konfiguration schon angefressen, und
+# fuer einen Augenblick trug die Kopie die Rechte der Quelle. Ein Verzeichnis als Ziel ist ein Fehlschlag (mv legte
+# sonst hinein und meldete Erfolg). Wortgleich in preupgrade.sh und postinstall.sh.
+gv_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    gv_neu="$2.neu.$$"
+    rm -f "$gv_neu" 2>/dev/null
+    if { : > "$gv_neu"; } 2>/dev/null && chmod 600 "$gv_neu" 2>/dev/null \
+       && cp "$1" "$gv_neu" 2>/dev/null && cmp -s "$1" "$gv_neu" \
+       && mv -f "$gv_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$gv_neu" 2>/dev/null
+    return 1
+}
 gv_sichern() {   # $1 Datei, $2 Sicherung, $3 Art (config|geheim), $4 Name fuer die Meldung
     [ -f "$1" ] || return 0
     gv_inhalt "$1" "$3"
     case $? in
-        0)  if cp -p "$1" "$2" 2>/dev/null; then
-                chmod 600 "$2" 2>/dev/null
+        0)  if gv_hinlegen "$1" "$2"; then
                 echo "<OK> $4 gesichert."
             else
                 echo "<WARNING> $4 liess sich nicht sichern ($2)."
+                GV_SICH_FEHL="$GV_SICH_FEHL $4"
             fi ;;
         1)  if [ -f "$2" ]; then
                 echo "<INFO> $(basename "$1") traegt keine Einstellungen - die vorhandene Sicherung bleibt unberuehrt."
             fi ;;
         *)  echo "<WARNING> Der Inhalt von $(basename "$1") liess sich nicht pruefen (php fehlt) -"
             echo "<WARNING> eine vorhandene Sicherung bleibt unberuehrt."
-            if [ ! -f "$2" ] && cp -p "$1" "$2" 2>/dev/null; then
-                chmod 600 "$2" 2>/dev/null
+            if [ ! -f "$2" ] && ! gv_hinlegen "$1" "$2"; then
+                # 0.9.34: nicht pruefbar und keine Sicherung da: sie koennte Inhalt tragen.
+                GV_SICH_FEHL="$GV_SICH_FEHL $4"
             fi ;;
     esac
 }
@@ -299,10 +337,10 @@ gv_sichern "$CF" "$BASE/config/plugins/$PFOLDER.backup.json" config "Konfigurati
 # hat das Skript nicht: dann ist nichts anzuhalten.
 GV_BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
 if [ -f "$GV_BBSH" ]; then
-    GV_BBAUS=$(timeout 40 /bin/bash "$GV_BBSH" stop 2>&1)
+    # 0.9.34: Wurzel und Ordner wie der Aufruf in postinstall.sh ausdruecklich; -k 5, falls der Halt das TERM nicht nimmt.
+    GV_BBAUS=$(env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout -k 5 40 /bin/bash "$GV_BBSH" stop 2>&1)
     echo "<INFO> Befehlsbruecke: $GV_BBAUS"
 fi
-echo "<OK> preupgrade abgeschlossen."
 
 # ==== NETZ-EINSTELLUNGEN-UPDATE (automatisch eingefuegt, nicht doppeln) ====
 # Zweitschrift NEBEN den Konfigurationsordner, zusaetzlich zur bisherigen
@@ -327,4 +365,15 @@ NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 # geloescht werden sie vom Installer trotzdem, samt Token und Zugangsdaten.
 gv_sichern "$NETZ_CFG/geheim.json" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.geheim.json" geheim "Cloud-Schluessel"
 
+# 0.9.34: Die Wirkung beider Sicherungen entscheidet. Mit exit 2 endet die Installation hier (&fail), postinstall.sh und
+# postupgrade.sh laufen nie und raeumten die Marke nie weg; deshalb hier. Die alte Fassung bleibt stehen, soll_laufen
+# auch: Der Minutenwaechter startet Dienst und Bruecke wieder, sobald die Marke weg ist.
+if [ -n "$GV_SICH_FEHL" ]; then
+    echo "<FAIL> Nicht gesichert:$GV_SICH_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die"
+    echo "<FAIL> Originale nicht loescht. Die bisherige Fassung bleibt installiert. Platz und Rechte unter"
+    echo "<FAIL> $BASE/config/plugins pruefen."
+    rm -f "$MARKE" "$MERKER" 2>/dev/null
+    exit 2
+fi
+echo "<OK> preupgrade abgeschlossen."
 exit 0

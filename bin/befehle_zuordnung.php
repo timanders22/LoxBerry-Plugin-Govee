@@ -12,9 +12,10 @@
  * und gibt array(bool ok, string grund) zurueck (gv_befehl_ergebnis()).
  *
  * Themen je Leuchte <praefix>/befehl/geraet<N>/<name> oder .../alle/<name> (E8, wie die Werte govee/geraet<N>/...);
- * "alle" geht wie am Endpunkt an jede eingerichtete Leuchte. Sechs Befehle schalten und stehen hinter dem zweiten Haken
- * "Schreibende Befehle zulassen" (steuerung_ein, E7); abruf braucht ihn nicht (wie am Endpunkt). segment, musik, pt und
- * suche gehen nicht ueber MQTT (E10). Sperrzeiten (ENTSCHEIDUNGEN Gruppe 3, E9): Sollwerte und Balken 0 s, Szene 5 s,
+ * "alle" geht wie am Endpunkt an jede eingerichtete Leuchte. Neun Befehle schalten und stehen hinter dem zweiten Haken
+ * "Schreibende Befehle zulassen" (steuerung_ein, E7); abruf braucht ihn nicht (wie am Endpunkt). musik, pt und suche gehen
+ * nicht ueber MQTT (E10). Seit 0.9.34 als Text: szene_name, segment, balken_farbe (gv_mqtt_text_befehl(), nie retained;
+ * balken bleibt gelb). Sperrzeiten (ENTSCHEIDUNGEN Gruppe 3, E9): Sollwerte und Balken 0 s, Szene 5 s,
  * Abruf 10 s. Die Bruecke wartet je Befehl hoechstens die Wartezeit des Plugins (ab Werk 6 s) auf den Dienst.
  * Quittung "uebergeben" fuer alles Schaltende: UDP an die Leuchte quittiert nicht (E11).
  */
@@ -40,6 +41,19 @@ $gv_wert = function ($aktion, $feld, $titel, $kachel, $min, $max, $sperre, $grun
                  'tun' => function ($w, $t) use ($aktion, $feld, $gv_nr) {
                      return gv_befehl_ergebnis(gv_befehl_annehmen(array('aktion' => $aktion, 'geraet' => $gv_nr($t),
                          $feld => (int) $w), gv_config(false), 'mqtt'));
+                 });
+};
+/* 0.9.34: Text-Befehle. Falsche Form: abgelehnt mit Grund FORM, kein Auftrag an den Dienst. */
+$gv_text = function ($name, $titel, $kachel, $max, $sperre, $grund) use ($gv_nr) {
+    return array('art' => 'text', 'max_byte' => $max, 'eingreifend' => true, 'sperre_s' => $sperre,
+                 'begruendung' => $grund, 'titel' => $titel, 'kachel' => $kachel, 'quittung' => 'uebergeben',
+                 'tun' => function ($w, $t) use ($name, $gv_nr) {
+                     $b = gv_mqtt_text_befehl($name, $w);
+                     if ($b === null) {
+                         return array(false, 'FORM');
+                     }
+                     $b['geraet'] = $gv_nr($t);
+                     return gv_befehl_ergebnis(gv_befehl_annehmen($b, gv_config(false), 'mqtt'));
                  });
 };
 return array(
@@ -70,6 +84,12 @@ return array(
             'Ereignis; schuetzt nur vor Doppelausloesung, dieselbe Szene darf kurz danach erneut gewaehlt werden'),
         '{geraet}/balken' => $gv_wert('balken', 'wert', 'Govee Balken in Prozent (MQTT)', 'BEFEHL.K_BALKEN', 0, 100, 0,
             'Ereignis; die Musterformel sendet nur beim Stufenwechsel'),
+        '{geraet}/szene_name' => $gv_text('szene_name', 'Govee Szene nach Name (MQTT)', 'BEFEHL.K_SZENE_NAME', 40, 5,
+            'Ereignis; schuetzt nur vor Doppelausloesung, dieselbe Szene darf kurz danach erneut gewaehlt werden'),
+        '{geraet}/segment' => $gv_text('segment', 'Govee Segmente (MQTT)', 'BEFEHL.K_SEGMENT', 300, 0,
+            'Ereignis wie am Endpunkt; ein fester Text aus Loxone geht nur beim Ausloesen hinaus'),
+        '{geraet}/balken_farbe' => $gv_text('balken_farbe', 'Govee Balken farbig (MQTT)', 'BEFEHL.K_BALKEN_FARBE', 10, 0,
+            'Ereignis wie balken; ein fester Text aus Loxone geht nur beim Ausloesen hinaus'),
         'abruf' => array('art' => 'puls', 'eingreifend' => false, 'sperre_s' => 10,
             'begruendung' => 'Eine LAN-Runde dauert etwa 2 s; oefter abzufragen bringt nichts',
             'titel' => 'Govee Zustand jetzt abrufen (MQTT)', 'kachel' => 'BEFEHL.K_ABRUF', 'quittung' => 'ausgefuehrt',

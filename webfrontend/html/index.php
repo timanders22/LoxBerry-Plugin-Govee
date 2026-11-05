@@ -18,7 +18,7 @@
  * Schaltend (nur wenn im Reiter Einstellungen zugelassen):
  *   ein      [&geraet=N]
  *   aus      [&geraet=N]
- *   hell     &wert=1..100
+ *   hell     &wert=0..100 (0 schaltet aus)
  *   kelvin   &wert=<Bereich des Geraets>
  *   farbe    &hex=RRGGBB
  *   szene    &name=<Schluessel aus dem Katalog>
@@ -27,6 +27,9 @@
  *            [&bewegung=<Zahl>] [&geschw=0..100]
  *   musik    &art=<Zahl> [&sens=0..100] [&gruppe=15|12|1|19]
  *   pt       &cmd=<base64>[,<base64>...]      nur wenn ausdruecklich erlaubt
+ *
+ * Seit 0.9.34 antwortet ein Wert ueber der Grenze mit HTTP 400 GRUND=WERT_AUSSERHALB (hell, balken, hgint, geschw, sens
+ * ueber 100; nr, art ueber 255); bis 0.9.33 kappte ihn der Nachrichtenbau still (nr: spaete Absage des Dienstes, HTTP 500).
  *
  * Befehlsbremse (X-7, seit dem Verbesserungsbau 01.10.2026): ein, aus, hell,
  * kelvin und farbe mit DEMSELBEN Wert an dieselbe Leuchte innerhalb von 60 s
@@ -169,6 +172,18 @@ function gv_w($v)
     return (string) (0 + $v);
 }
 
+/** 0.9.34: Wertebereich wie im Reiter Test und in der Tabelle der Befehlsbruecke. Ein still gekappter Wert waere eine
+ *  Falschaussage. Leer heisst: nicht angegeben. */
+function gv_bereich($name, $w, $max)
+{
+    if ($w !== '' && (int) $w > $max) {
+        http_response_code(400);
+        echo "SET;OK=0;GRUND=WERT_AUSSERHALB\n";
+        echo 'Der Wert von ' . $name . ' liegt ueber ' . $max . ".\n";
+        exit;
+    }
+}
+
 $gv_lox = gv_loxone();
 $gv_alle = gv_werte();
 $gv_alter = gv_alter();
@@ -270,6 +285,9 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
         echo "SET;OK=0;GRUND=WERT_FEHLT\n";
         exit;
     }
+    if ($gv_aktion !== 'kelvin') {
+        gv_bereich('wert', $gv_wert, 100);
+    }
     $gv_befehl['wert'] = (int) $gv_wert;
     if ($gv_aktion === 'balken' && $gv_hex !== '') {
         $gv_befehl['hex'] = $gv_hex;
@@ -305,6 +323,7 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
         exit;
     }
     if ($gv_szenennr !== '') {
+        gv_bereich('nr', $gv_szenennr, 255);
         $gv_befehl['nr'] = (int) $gv_szenennr;
     } else {
         $gv_befehl['name'] = $gv_name;
@@ -316,6 +335,8 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
         echo "Form: segmente=1-3:ff0000,7:00ff00 - Pixel werden ab 1 gezaehlt.\n";
         exit;
     }
+    gv_bereich('hgint', $gv_hgint, 100);
+    gv_bereich('geschw', $gv_geschw, 100);
     $gv_befehl['segmente'] = $gv_segmente;
     $gv_befehl['verfahren'] = $gv_verf;
     if ($gv_hg !== '') {
@@ -336,6 +357,8 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
         echo "SET;OK=0;GRUND=ART_FEHLT\n";
         exit;
     }
+    gv_bereich('art', $gv_art, 255);
+    gv_bereich('sens', $gv_sens, 100);
     $gv_befehl['art'] = (int) $gv_art;
     $gv_befehl['gruppe'] = (int) $gv_gruppe;
     $gv_befehl['sens'] = ($gv_sens === '') ? 100 : (int) $gv_sens;

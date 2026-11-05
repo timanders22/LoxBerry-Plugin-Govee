@@ -563,12 +563,29 @@ function gv_mqtt_runde_senden($paare, $immer, $leeren, $praefix, $jetzt)
  * Befehle aus der Warteschlange
  * ================================================================== */
 
-function gv_antwort($kennung, $ok, $meldung)
+/* $teil (0.9.34): geraet=alle, nicht jede Leuchte hat bestaetigt; gv_befehl_absetzen() gibt es als dritten Wert weiter. */
+function gv_antwort($kennung, $ok, $meldung, $teil = 0)
 {
     $ordner = gv_paths()['datadir'] . '/antworten';
     @mkdir($ordner, 0775, true);
     gv_json_schreiben($ordner . '/' . $kennung . '.json',
-        array('ok' => (int) $ok, 'meldung' => (string) $meldung, 'ts' => time()));
+        array('ok' => (int) $ok, 'meldung' => (string) $meldung, 'ts' => time(), 'teil' => $teil ? 1 : 0));
+}
+
+/**
+ * Darf aktion=abruf jetzt die Cloud fragen? Rueckgabe: 0 = ja (und der Lauf ist vermerkt), sonst die Sekunden bis dahin.
+ * Zwischen zwei Abrufen mindestens 60 s (0.9.34): die Zustandsabfrage zaehlt je Geraet gegen das Kontingent, und ein
+ * Abruf-Baustein in Loxone kann im Sekundentakt kommen. Ein Uhrsprung zurueck bremst nicht.
+ */
+function gv_abruf_cloud_warten($jetzt)
+{
+    static $letzter = 0;
+    $seit = $jetzt - $letzter;
+    if ($letzter > 0 && $seit >= 0 && $seit < 60) {
+        return 60 - $seit;
+    }
+    $letzter = $jetzt;
+    return 0;
 }
 
 
@@ -581,10 +598,42 @@ function gv_befehl_ausfuehren($b, $horcher)
     if ($aktion === 'abruf') {
         $alle_g = gv_geraete();
         $treffer = gv_runde($horcher, $alle_g, 2);
-        $n = gv_abbild_schreiben($treffer, gv_nummern_der_art($alle_g, 'lan'));
-        return array($n > 0 ? 1 : 0, $n > 0
-            ? ($n . ' Geraet(e) haben geantwortet.')
-            : 'Kein Geraet hat geantwortet.');
+        $gefragt = gv_nummern_der_art($alle_g, 'lan');
+        /* 0.9.34: auch die Cloud-Leuchten. Bis 0.9.33 fragte der Abruf nur das LAN: Eine Nur-Cloud-Anlage meldete immer
+         * "Kein Geraet hat geantwortet", obwohl die Cloud antwortete. In $gefragt steht eine Cloud-Leuchte nur, wenn sie
+         * wirklich gefragt wurde (M1): ein uebersprungener Lauf ist kein Fehlversuch, wie im Takt der Hauptschleife. */
+        $cloud_nr = gv_nummern_der_art($alle_g, 'cloud');
+        $hinweis = '';
+        $uebersprungen = false;
+        if ($cloud_nr) {
+            if (empty($cfg['cloud_ein'])) {
+                $hinweis = ' Die Cloud ist ausgeschaltet - Cloud-Leuchten wurden nicht gefragt.';
+            } elseif (gv_cloud_sperre_lesen() > time()) {
+                $uebersprungen = true;
+                $hinweis = ' Cloud-Leuchten nicht gefragt: Kontingent, bis ' . date('H:i:s', gv_cloud_sperre_lesen()) . '.';
+            } else {
+                $warten = gv_abruf_cloud_warten(time());
+                if ($warten > 0) {
+                    $uebersprungen = true;
+                    $hinweis = ' Cloud-Leuchten nicht gefragt: Der letzte Abruf ist keine 60 s her (noch ' . $warten
+                        . ' s, schont das Kontingent).';
+                } else {
+                    $treffer = array_replace($treffer, gv_runde_cloud($alle_g));
+                    $gefragt = $gefragt + $cloud_nr;
+                }
+            }
+        }
+        /* Wie die Hauptschleife: zuerst das Lebenszeichen, dann das Abbild. */
+        gv_zustand_schreiben('', true);
+        $n = gv_abbild_schreiben($treffer, $gefragt);
+        if ($n > 0) {
+            return array(1, $n . ' Geraet(e) haben geantwortet.' . $hinweis);
+        }
+        /* Niemand gefragt, weil der Lauf nur uebersprungen wurde: das ist keine Absage (die Werte bleiben). */
+        if (!$gefragt && $uebersprungen) {
+            return array(1, ltrim($hinweis));
+        }
+        return array(0, 'Kein Geraet hat geantwortet.' . $hinweis);
     }
 
     if ($aktion === 'suche') {
@@ -641,8 +690,10 @@ function gv_befehl_ausfuehren($b, $horcher)
             }
             $teile[] = $n . ': ' . $m;
         }
+        /* Dritter Wert (0.9.34): teil. Die Befehlsbremse merkt nur, was ALLE bestaetigt haben (gv_befehl_annehmen()). */
         return array($gut > 0 ? 1 : 0,
-            $gut . ' von ' . count($alle) . ' Geraeten angenommen. ' . implode(' | ', $teile));
+            $gut . ' von ' . count($alle) . ' Geraeten angenommen. ' . implode(' | ', $teile),
+            ($gut > 0 && $gut < count($alle)) ? 1 : 0);
     }
 
     $nr = isset($b['geraet']) ? (int) $b['geraet'] : 1;
@@ -670,7 +721,13 @@ function gv_befehl_ausfuehren($b, $horcher)
         return array(0, $bmeldung);
     }
 
-    list($ok, $fehler) = gv_udp_senden($g['ip'], GV_PORT_BEFEHL, $nachricht);
+    /* 0.9.34: ein eingetragener Name wird aufgeloest wie in gv_runde(). Bis 0.9.33 ging er ungeprueft an den Sender, und der
+     * Fehlertext des Sockets sagte nicht, woran es lag. */
+    $ziel = gv_adresse_aufloesen($g['ip']);
+    if ($ziel === '') {
+        return array(0, 'Die Adresse von ' . $g['name'] . ' (' . $g['ip'] . ') ist nicht aufloesbar - nichts gesendet.');
+    }
+    list($ok, $fehler) = gv_udp_senden($ziel, GV_PORT_BEFEHL, $nachricht);
     if (!$ok) {
         return array(0, $fehler);
     }
@@ -837,8 +894,10 @@ function gv_warteschlange($horcher)
             gv_antwort($kennung, 0, 'Der Befehl liess sich nicht lesen.');
             continue;
         }
-        list($ok, $meldung) = gv_befehl_ausfuehren($b, $horcher);
-        gv_antwort($kennung, $ok, $meldung);
+        $gv_erg = gv_befehl_ausfuehren($b, $horcher);
+        $ok = $gv_erg[0];
+        $meldung = $gv_erg[1];
+        gv_antwort($kennung, $ok, $meldung, empty($gv_erg[2]) ? 0 : 1);
         gv_log('Befehl ' . (isset($b['aktion']) ? $b['aktion'] : '?')
             . ((isset($b['quelle']) && $b['quelle'] === 'mqtt') ? ' (ueber MQTT)' : '')
             . ' -> ' . ($ok ? 'ok' : 'abgelehnt') . ': ' . $meldung);

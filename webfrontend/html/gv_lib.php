@@ -1237,8 +1237,12 @@ function gv_bremse_pruefen(array $b, $cfg)
  * macht die Groessen ungueltig, die er mit veraendern kann: hell, kelvin und
  * farbe schalten eine Leuchte womoeglich ein; kelvin und farbe verdraengen
  * einander. Rueckgabe: true, wenn geschrieben.
+ *
+ * $teil (0.9.34): geraet=alle, und nicht jede Leuchte hat bestaetigt. Dann wird der Wert NICHT gemerkt - sonst kaeme die
+ * Wiederholung binnen 60 s als "unveraendert" zurueck, und die Leuchte, die fehlte, bliebe dunkel. Zugleich fallen die
+ * alten Staende derselben Groesse: die Leuchten stehen jetzt verschieden, und ein "gleicher Wert" sagt nichts mehr.
  */
-function gv_bremse_merken(array $b, $cfg)
+function gv_bremse_merken(array $b, $cfg, $teil = false)
 {
     $w = gv_bremse_wert($b);
     if ($w === null) {
@@ -1265,6 +1269,10 @@ function gv_bremse_merken(array $b, $cfg)
     foreach ($ziele as $nr) {
         foreach ($verdraengt[$w[0]] as $v) {
             unset($m[$nr . '|' . $v]);
+        }
+        if ($teil) {
+            unset($m[$nr . '|' . $w[0]]);
+            continue;
         }
         $m[$nr . '|' . $w[0]] = array('w' => $w[1], 't' => $jetzt);
     }
@@ -1330,8 +1338,11 @@ function gv_befehl_absetzen($befehl, $wartezeit = null)
         if (is_file($antwort)) {
             $a = gv_json_lesen($antwort);
             @unlink($antwort);   // gelesen ist erledigt
+            /* 0.9.34: dritter Wert teil = 1, wenn geraet=alle nur teilweise bestaetigt wurde (gv_antwort() im Dienst).
+             * Aufrufer mit list($a, $b) bemerken davon nichts. */
             return array((int) (isset($a['ok']) ? $a['ok'] : 0),
-                         (string) (isset($a['meldung']) ? $a['meldung'] : ''));
+                         (string) (isset($a['meldung']) ? $a['meldung'] : ''),
+                         empty($a['teil']) ? 0 : 1);
         }
         usleep(100000);
     }
@@ -2511,7 +2522,14 @@ function gv_selbsttest()
                   . ' (' . count($szene['cmd']) . ' Pakete)' . ($ok ? '' : ' - ' . $meldung);
     }
 
-    $anzahl = count($faelle) + count(gv_szenen());
+    /* Dritte Ebene (0.9.34): die Zuordnungstabelle der Befehlsbruecke. */
+    list($gv_zok, $gv_ztext) = gv_selbsttest_zuordnung();
+    if (!$gv_zok) {
+        $fehl++;
+    }
+    $zeilen[] = ($gv_zok ? '[ OK ] ' : '[FEHL] ') . 'befehle_zuordnung: ' . $gv_ztext;
+
+    $anzahl = count($faelle) + count(gv_szenen()) + 1;
     array_unshift($zeilen, sprintf('%d Faelle geprueft, %d Fehlschlaege.', $anzahl, $fehl), '');
     return array($anzahl, $fehl, implode("\n", $zeilen));
 }
@@ -3892,12 +3910,13 @@ function gv_befehl_gesperrt($aktion, $cfg)
  * $quelle 'mqtt' (Befehlsbruecke) traegt nur 'quelle' => 'mqtt' in den Auftrag, damit das Protokoll des Dienstes
  * "(ueber MQTT)" schreibt; der HTTP-Weg legt denselben Auftrag ab wie bisher.
  * Rueckgabe array('ok' => 0|1|2, 'grund' => ''|STEUERUNG_AUS|DIENST_LAEUFT_NICHT|BREMSE_MERKER, 'http' => Code,
- * 'unveraendert' => 0|1, 'seit' => s, 'meldung' => Text des Dienstes).
+ * 'unveraendert' => 0|1, 'seit' => s, 'meldung' => Text des Dienstes, 'teil' => 0|1 seit 0.9.34: geraet=alle, nicht jede
+ * Leuchte hat bestaetigt).
  */
 function gv_befehl_annehmen(array $befehl, $cfg, $quelle = 'http')
 {
     $aktion = isset($befehl['aktion']) ? (string) $befehl['aktion'] : '';
-    $r = array('ok' => 0, 'grund' => '', 'http' => 200, 'unveraendert' => 0, 'seit' => 0, 'meldung' => '');
+    $r = array('ok' => 0, 'grund' => '', 'http' => 200, 'unveraendert' => 0, 'seit' => 0, 'meldung' => '', 'teil' => 0);
     if (gv_befehl_gesperrt($aktion, $cfg)) {
         $r['grund'] = 'STEUERUNG_AUS';
         $r['http'] = 403;
@@ -3926,13 +3945,17 @@ function gv_befehl_annehmen(array $befehl, $cfg, $quelle = 'http')
     if ($quelle === 'mqtt') {
         $befehl['quelle'] = 'mqtt';
     }
-    list($erg, $meldung) = gv_befehl_absetzen($befehl);
+    /* Nicht list(): nur eine Antwort des Dienstes traegt den dritten Wert, die Absagen davor nicht. */
+    $gv_ab = gv_befehl_absetzen($befehl);
+    $erg = $gv_ab[0];
+    $meldung = $gv_ab[1];
+    $r['teil'] = empty($gv_ab[2]) ? 0 : 1;
     if ($erg === 0) {
         $r['http'] = 500;
     }
-    /* Gemerkt wird nur, was der Dienst bestaetigt hat (1). Scheitert das
-     * Schreiben, wirkt der Befehl trotzdem - aber das steht im Protokoll. */
-    if ($erg === 1 && !gv_bremse_merken($befehl, $cfg)) {
+    /* Gemerkt wird nur, was der Dienst bestaetigt hat (1), bei geraet=alle seit 0.9.34 nur, was ALLE bestaetigt haben
+     * (gv_bremse_merken(), $teil). Scheitert das Schreiben, wirkt der Befehl trotzdem - aber das steht im Protokoll. */
+    if ($erg === 1 && !gv_bremse_merken($befehl, $cfg, $r['teil'] === 1)) {
         gv_log_gebremst('bremse_schreiben', 'Die Merkerdatei der Befehlsbremse liess sich nicht schreiben - '
             . 'die Bremse erkennt den letzten Befehl nicht.');
     }
@@ -4081,6 +4104,81 @@ function gv_bruecke_lage()
     return array(false, sprintf(gv_t('BEFEHL.T_STEHT'), $wie));
 }
 
+/**
+ * Die Text-Befehle der Bruecke (0.9.34): prueft die Nutzlast und baut den Auftrag ohne Geraet. Rueckgabe: Feld oder null.
+ * szene_name und segment nach denselben Mustern wie der Endpunkt (webfrontend/html/index.php, name und segmente);
+ * balken_farbe ist Prozent:RRGGBB, Prozent 0 bis 100 ohne fuehrende Null, und geht ueber das schon vorhandene hex von
+ * balken in gv_nachricht_bauen(). {geraet}/balken bleibt gelb. Eine eigene Funktion, damit der Selbsttest die Formen ohne
+ * Dienst und ohne Auftrag messen kann.
+ */
+function gv_mqtt_text_befehl($name, $w)
+{
+    $w = (string) $w;
+    switch ((string) $name) {
+        case 'szene_name':
+            return preg_match('/^[A-Za-z0-9_]{1,40}\z/', $w) ? array('aktion' => 'szene', 'name' => $w) : null;
+        case 'segment':
+            return preg_match('/^[0-9a-fA-F:,\-]{1,300}\z/', $w)
+                ? array('aktion' => 'segment', 'segmente' => $w, 'verfahren' => 'graffiti') : null;
+        case 'balken_farbe':
+            return preg_match('/^(100|[1-9]?[0-9]):([0-9a-fA-F]{6})\z/', $w, $m)
+                ? array('aktion' => 'balken', 'wert' => (int) $m[1], 'hex' => $m[2]) : null;
+    }
+    return null;
+}
+
+/** Der feste Text eines Text-Befehls in der Vorlage "Govee MQTT-Befehle": ein Beispiel, das wirkt und zu aendern ist. */
+function gv_mqtt_text_beispiel($name)
+{
+    if ($name === 'szene_name') {
+        $k = array_keys(gv_szenen_alle(gv_config(false)));
+        return $k ? (string) $k[0] : 'name';
+    }
+    return $name === 'segment' ? '1-3:ff0000,7:00ff00' : '40:00ff00';
+}
+
+/**
+ * Die Pruefzeile befehle_zuordnung im Selbsttest (0.9.34): Laedt die Tabelle und laesst sie von der Bruecke pruefen, haelt
+ * die Art der Befehle dagegen und misst die Formen der Text-Befehle. Schaltet nichts: gv_mqtt_text_befehl() baut nur den
+ * Auftrag, die 'tun' der Tabelle werden nicht gerufen. Rueckgabe: array(ok, Text).
+ */
+function gv_selbsttest_zuordnung()
+{
+    list($l, $fehler) = gv_bruecke_liste();
+    if ($l === null) {
+        return array(false, (string) $fehler);
+    }
+    $art = array();
+    foreach ($l['befehle'] as $b) {
+        $art[$b['name']] = $b['art'];
+    }
+    $soll = array('{geraet}/szene_name' => 'text', '{geraet}/segment' => 'text', '{geraet}/balken_farbe' => 'text',
+                  '{geraet}/balken' => 'ganz', '{geraet}/szene' => 'ganz');
+    foreach ($soll as $n => $a) {
+        if (!isset($art[$n]) || $art[$n] !== $a) {
+            return array(false, $n . ' fehlt oder ist nicht ' . $a);
+        }
+    }
+    $gut = array(array('szene_name', 'aurora_1'), array('segment', '1-3:ff0000,7:00ff00'), array('balken_farbe', '0:00ff00'),
+                 array('balken_farbe', '100:FF0000'), array('balken_farbe', '40:00ff00'));
+    $schlecht = array(array('szene_name', 'a b'), array('szene_name', 'a;b'), array('szene_name', str_repeat('a', 41)),
+                      array('segment', '1-3:ff0000;'), array('segment', str_repeat('1', 301)),
+                      array('balken_farbe', '101:00ff00'), array('balken_farbe', '40:00ff0'), array('balken_farbe', '40:00ff00:1'),
+                      array('balken_farbe', '-1:00ff00'), array('balken_farbe', '040:00ff00'), array('balken_farbe', '40'),
+                      array('balken_farbe', '40:gg0000'));
+    foreach ($gut as $f) {
+        if (gv_mqtt_text_befehl($f[0], $f[1]) === null) {
+            return array(false, $f[0] . ' weist ' . $f[1] . ' ab');
+        }
+    }
+    foreach ($schlecht as $f) {
+        if (gv_mqtt_text_befehl($f[0], $f[1]) !== null) {
+            return array(false, $f[0] . ' nimmt ' . $f[1] . ' an');
+        }
+    }
+    return array(true, count($art) . ' Befehle, ' . count($gut) . ' gute und ' . count($schlecht) . ' falsche Formen');
+}
+
 /** Die Zeilen von befehlsbruecke.php --pruefen (Reiter Test), im Prozess. */
 function gv_bruecke_pruefzeilen()
 {
@@ -4123,10 +4221,12 @@ function gv_vorlage_mqtt_befehle($nummer = 1)
         $name = (string) $b['name'];
         if (strpos($name, '{geraet}/') === 0) {
             $kurz = substr($name, 9);
-            if ($kurz === 'szene' && $g['art'] === 'cloud') {
+            if (($kurz === 'szene' || $kurz === 'szene_name') && $g['art'] === 'cloud') {
                 continue;
             }
-            if ($kurz === 'balken' && ((int) $g['pixel'] < 1 || $g['art'] === 'cloud')) {
+            /* 0.9.34: segment und balken_farbe brauchen wie balken die Pixelzahl und den LAN-Weg. */
+            if (in_array($kurz, array('balken', 'balken_farbe', 'segment'), true)
+                && ((int) $g['pixel'] < 1 || $g['art'] === 'cloud')) {
                 continue;
             }
             $thema = str_replace('{geraet}', 'geraet' . (int) $nummer, $b['thema']);
@@ -4143,6 +4243,10 @@ function gv_vorlage_mqtt_befehle($nummer = 1)
         } elseif ($b['art'] === 'puls') {
             $c['on'] = 'publish ' . $thema . ' 1';
             $c['analog'] = false;
+        } elseif ($b['art'] === 'text') {
+            /* 0.9.34: Text geht nicht durch <v.0> (ein Analogwert); ein Befehl mit festem Text, das Beispiel ist zu aendern. */
+            $c['on'] = 'publish ' . $thema . ' ' . gv_mqtt_text_beispiel(basename($name));
+            $c['analog'] = false;
         } else {
             $c['on'] = 'publish ' . $thema . ' <v.0>';
             $c['analog'] = true;
@@ -4157,6 +4261,70 @@ function gv_vorlage_mqtt_befehle($nummer = 1)
             'address' => '/dev/udp/' . $host . '/' . $port,
         ), $cmds),
     );
+}
+
+/* ---------------- Healthcheck (0.9.34) ---------------- */
+
+/* Ab so vielen Fehlversuchen in Folge gilt eine Leuchte als "antwortet nicht" - dieselbe Zahl wie die Ansage. */
+if (!defined('GV_GESUND_FEHL')) { define('GV_GESUND_FEHL', 3); }
+
+/**
+ * Die Antwort auf den LoxBerry-Healthcheck (bin/healthcheck, Bauart Weatherdata, HomePod4Lox). Rueckgabe array(Status, Text):
+ * 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis. NUR AUS DATEIEN: kein Netz, keine Selbstheilung (gv_config(false), nicht
+ * gv_werte()), nichts angelegt. Von einer Leuchte steht nur der Name aus der Einrichtung im Text, nie Adresse oder SKU;
+ * Token und Schluessel nie. Der Ausfall einer Leuchte ist eine Warnung: Leuchten sind oft gewollt stromlos.
+ */
+function gv_gesundheit($jetzt = null)
+{
+    $jetzt = $jetzt === null ? time() : (int) $jetzt;
+    if (gv_paths()['home'] === '') {
+        return array(3, gv_t('GESUND.KEINE_WURZEL'));
+    }
+    $gv_marke = gv_upgrade_marke();
+    if ($gv_marke[1]) {
+        return array(6, gv_t('GESUND.UPGRADE'));
+    }
+    $c = gv_config(false);
+    $soll = gv_dienst_soll();
+    if ($soll) {
+        if (!gv_dienst_laeuft()) {
+            return array(3, gv_t('GESUND.DIENST'));
+        }
+        $z = gv_zustand();
+        $ts = is_array($z) && isset($z['ts']) ? (int) $z['ts'] : 0;
+        if ($ts <= 0) {
+            return array(4, gv_t('GESUND.KEIN_LAUF'));
+        }
+        $grenze = gv_altersgrenze($c);
+        if ($jetzt - $ts > $grenze) {
+            return array(3, sprintf(gv_t('GESUND.ALT'), $jetzt - $ts, $grenze));
+        }
+    }
+    if (!empty($c['befehle_mqtt_ein']) && !empty($c['mqtt_ein'])) {
+        list($gv_bl) = gv_bruecke_lage();
+        if ($gv_bl === false) {
+            return array(4, gv_t('GESUND.BRUECKE'));
+        }
+    }
+    $g = gv_geraete($c);
+    if (!$g) {
+        return array(6, gv_t('GESUND.KEINE_LEUCHTE'));
+    }
+    if (!$soll) {
+        return array(6, gv_t('GESUND.ANGEHALTEN'));
+    }
+    $l = gv_loxone();
+    $werte = isset($l['geraete']) && is_array($l['geraete']) ? $l['geraete'] : array();
+    $stumm = array();
+    foreach ($g as $nr => $e) {
+        if (isset($werte[$nr]['fehl']) && (int) $werte[$nr]['fehl'] >= GV_GESUND_FEHL) {
+            $stumm[] = (string) $e['name'];
+        }
+    }
+    if ($stumm) {
+        return array(4, sprintf(gv_t('GESUND.LEUCHTEN'), implode(', ', $stumm)));
+    }
+    return array(5, gv_t('GESUND.OK'));
 }
 
 /* ==================================================================
@@ -4288,12 +4456,22 @@ function gv_ansage_fuer_sicherung(array $c)
     return $c;
 }
 
+/** 0.9.34: Der Satz zu einer Kennung des Stamms, mit dem Feldnamen davor; ohne Kennung (kein Block): die Erwartung. */
+function gv_ansage_grund($k, $kennung)
+{
+    $t = (string) $kennung !== '' ? ansage_kennung_text($kennung, gv_ansage_k()) : gv_t('EINST.SICH_W_OBJEKT');
+    /* Eine Kennung UNTER|tts.port|... nennt das Feld schon. */
+    return strpos($t, (string) $k . '.') === 0 ? $t : (string) $k . ': ' . $t;
+}
+
 /**
  * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
  * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
+ * $gruende (0.9.34): der Grund je abgewiesenem Schluessel; der Wert 'ABGEWIESEN' traegt ihn nicht.
  */
-function gv_ansage_sicherung_vor($roh)
+function gv_ansage_sicherung_vor($roh, &$gruende = null)
 {
+    $gruende = array();
     $d = json_decode((string) $roh, true);
     if (!is_array($d)) { return $roh; }
     $inhalt = false;
@@ -4305,7 +4483,10 @@ function gv_ansage_sicherung_vor($roh)
     if (array_key_exists('tts', $d)) {
         $g = '';
         $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, gv_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
+        $gv_tm = ansage_sicherung_mangel($d['tts']);
+        if ($gv_tm || $p === null) {
+            /* Nur die Namen der Felder, nie ein Wert. */
+            $gruende['tts'] = $gv_tm ? sprintf(gv_t('EINST.SICH_TTS_TOKEN'), implode(', ', $gv_tm)) : gv_ansage_grund('tts', $g);
             $d['tts'] = 'ABGEWIESEN';
         } else {
             list($tv) = ansage_vervollstaendigen($p, 'aus');
@@ -4429,6 +4610,8 @@ function gv_ansage_post(array $post)
         return array(false, $t, array());
     }
     $cfg['tts'] = $neu;
+    // 0.9.34: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 0.9.33 ueberschrieb es der naechste Abgleich.
+    $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
     $t = array();
@@ -4455,7 +4638,9 @@ function gv_ansage_form_html($felder)
     $o[] = ansage_formular_html(gv_tts($cfg), $h + array('modi' => gv_ansage_modi(), 'ziele' => true, 'ziele_post' => isset($ein['tts_ziel_art']) ? $ein : null), $k);
     $o[] = ansage_regeln_html(gv_ansage_regeln($cfg), (isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken']) ? $cfg['ansage_haken'] : array()) + array('geraet' => 0, 'konto' => 1), gv_ansage_anlaesse(), $h + array('token_vor_ort' => true), $k);
     $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_speichern" value="1">' . $e(gv_t('ANSAGEPLUGIN.K_SPEICHERN')) . '</button>';
-    $o[] = '<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1">' . $e(gv_t('ANSAGEPLUGIN.K_TEST')) . '</button></div>';
+    $o[] = '<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1">' . $e(gv_t('ANSAGEPLUGIN.K_TEST')) . '</button>';
+    // 0.9.34: je Ziel ein Knopf (Bauart Bewaesserung); im selben Formular, das Merkmal fmt reist also mit. Ohne weitere Ziele nichts.
+    $o[] = ansage_testknoepfe_html(gv_tts($cfg), $k, array('klasse' => 'sm-btn sm-b-aktion')) . '</div>';
     $o[] = '</form>';
     $o[] = gv_ansage_lage_html($cfg);
     return implode("\n", $o) . "\n";
@@ -4466,8 +4651,15 @@ function gv_ansage_test()
 {
     $k = gv_ansage_k();
     gv_ansage_token_pflegen();
-    $r = ansage_testansage(gv_ansage_vor_ort(), $k);
-    gv_log('Testansage: ' . ansage_kurz($r));
+    // 0.9.34: ansage_test_ziel=n spricht nur dieses Ziel; eine unbrauchbare Nummer spricht nichts (Bauart Bewaesserung).
+    $gv_hat_ziel = isset($_POST['ansage_test_ziel']);
+    $gv_nur = $gv_hat_ziel ? ansage_test_ziel($_POST) : 0;
+    if ($gv_hat_ziel && $gv_nur === 0) {
+        $r = array('stand' => 0, 'kennung' => 'ZIEL_UNBEKANNT|-', 'art' => '-', 'http' => 0, 'zeile' => '', 'zeichen' => 0);
+    } else {
+        $r = ansage_testansage(gv_ansage_vor_ort(), $k, $gv_nur);
+    }
+    gv_log('Testansage' . ($gv_nur >= 1 ? ' an Ziel ' . $gv_nur : '') . ': ' . ansage_kurz($r));
     return array($r['stand'] === 1, $r['stand'] === 1 ? '' : ansage_kennung_text($r['kennung'], $k));
 }
 
@@ -4699,7 +4891,7 @@ function gv_ansage_flanke($anlass, $gestoert, $name = '', $frist = 0, $jetzt = n
 
 function gv_sicherung_lesen($roh, &$namen = null)
 {
-    $roh = gv_ansage_sicherung_vor($roh);     // Token und Vermerk bleiben die geltenden
+    $roh = gv_ansage_sicherung_vor($roh, $gv_agr);     // Token und Vermerk bleiben die geltenden
     /* X-3: $namen sammelt die Namen der beanstandeten Schluessel (nie Werte).
      * So prueft gv_rueckspiel_befund() die eigene Sicherung mit DIESER
      * Funktion - eine zweite Pruefliste waere eine zweite Wahrheit. */
@@ -4726,7 +4918,22 @@ function gv_sicherung_lesen($roh, &$namen = null)
         }
         $gv_aw = gv_ansage_wert($k, $w);     // Sprachansagen: eigene Pruefung; Token und Vermerk bleiben die geltenden
         if ($gv_aw !== null) {
-            if ($gv_aw) { $neu[$k] = $w; $gesehen++; } else { $mangel[] = gv_t('ANSAGEPLUGIN.M_FEHL'); $namen[] = (string) $k; }
+            if ($gv_aw) {
+                $neu[$k] = $w;
+                $gesehen++;
+            } else {
+                /* 0.9.34: der konkrete Grund statt pauschal "liessen sich nicht speichern". */
+                if (isset($gv_agr[$k])) {
+                    $mangel[] = $gv_agr[$k];
+                } elseif ($k === 'ansage_regeln') {
+                    $gv_ag = '';
+                    if (is_array($w)) { ansage_regeln_wert($w, $gv_ag); }
+                    $mangel[] = gv_ansage_grund($k, $gv_ag);
+                } else {
+                    $mangel[] = $k . ': ' . gv_t('ANSAGEPLUGIN.M_FEHL');
+                }
+                $namen[] = (string) $k;
+            }
             continue;
         }
         /* Unmaskiert: die Anzeige maskiert selbst. Bis 0.9.22 stand hier

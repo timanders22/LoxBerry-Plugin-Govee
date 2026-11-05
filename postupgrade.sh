@@ -10,6 +10,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
+# 0.9.34: dieselbe Pruefung wie MGiSmart und Bewaesserung - ein Ordnername mit "/" oder "." waere ein Pfad hinaus.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angelegt."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
@@ -35,7 +39,10 @@ gv_wurzel_suchen() {
     return 1
 }
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+# 0.9.34: general.json wird auch von $5 und $LBHOMEDIR verlangt; bis 0.9.33 nur von der Suche (ein fremder Baum mit den
+# beiden Ordnern galt als Wurzel).
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
     BASE=$(gv_wurzel_suchen "$SELF") || BASE=""
 fi
 if [ -z "$BASE" ]; then
@@ -128,7 +135,9 @@ fi
 gv_marke_weg
 GV_BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
 if [ -f "$GV_BBSH" ]; then
-    GV_BBAUS=$(/bin/bash "$GV_BBSH" start 2>&1)
+    # 0.9.34: Wurzel und Ordner wie der Aufruf in postinstall.sh ausdruecklich, und begrenzt: bis 0.9.33 konnte ein
+    # haengender Start das Skript und damit den Installer unbegrenzt aufhalten. Der Dienst selbst laeuft abgekoppelt weiter.
+    GV_BBAUS=$(env "LBHOMEDIR=$BASE" "LBPPLUGINDIR=$PFOLDER" timeout -k 5 40 /bin/bash "$GV_BBSH" start 2>&1)
     echo "<INFO> Befehlsbruecke: $GV_BBAUS"
 fi
 echo "<OK> postupgrade abgeschlossen."

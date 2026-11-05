@@ -3,9 +3,22 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.33 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.34 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.34
+
+- **Sprechtoken:** Ein von Hand eingetragenes Alexa- oder Google-Token wird nicht mehr vom Token des Nachbar-Plugins überschrieben.
+- **Achtung, Wertebereiche am Endpunkt:** Wer per HTTP mehr als 100 sendet (`hell`, `balken`, `hgint`, `geschw`, `sens`) oder mehr als 255 (`nr`, `art`), bekommt jetzt die Fehlerantwort HTTP 400 `GRUND=WERT_AUSSERHALB` statt einer stillen Kappung (bei `nr` statt der späteren Absage des Dienstes mit HTTP 500). Die Vorlagen und die Musterformel des PV-Balkens senden höchstens 100; betroffen ist nur eigene Logik in Loxone.
+- **MQTT, neue Befehle:** `govee/befehl/geraet<N>/szene_name` (Schlüssel aus dem Katalog), `…/segment` (`1-3:ff0000,7:00ff00`) und `…/balken_farbe` (`40:00ff00`, Prozent:RRGGBB), alle als Text und mit denselben Haken wie die übrigen Befehle. `…/balken` bleibt gelb und unverändert. Eine automatische Ampel gibt es nicht. Die Vorlage „Govee MQTT-Befehle“ legt sie mit einem Beispieltext an; den Text im Befehl ändern.
+- **Healthcheck:** `bin/healthcheck` meldet Dienst, letzte Runde, Leuchten und Befehlsbrücke an den Healthcheck des LoxBerry, rein aus Dateien.
+- **Abruf auch für Cloud-Leuchten:** `aktion=abruf` fragt bei eingeschalteter Cloud auch sie, höchstens einmal in 60 s und nie während einer Kontingentsperre. Eine reine Cloud-Anlage meldet nicht mehr „Kein Gerät“, wenn die Cloud antwortet.
+- **Befehlsbremse bei `geraet=alle`:** Ein Wert gilt nur als gesendet, wenn **alle** Leuchten ihn bestätigt haben. Die Wiederholung erreicht also die Leuchte, die gefehlt hat.
+- **Testansage je Ziel:** Mit weiteren Zielen steht im Abschnitt *Sprachansagen* je Ziel ein eigener Knopf.
+- **Aktualisierung sicherer:** Scheitert die Sicherung einer Datei mit Inhalt oder lässt sich die Marke nicht anlegen, bricht das Update ab, bevor der Installer etwas löscht; die bisherige Fassung bleibt. Sicherung und Zurückspielen schreiben atomar. Die Marke einer abgebrochenen Aktualisierung (über eine Stunde alt) gilt bei einer Neuinstallation nicht mehr.
+- **Kleinere Korrekturen:** Die Prüfzeile „Endpunkt“ im Reiter Test nimmt den eingestellten Webport statt 80. Das Zurückspielen einer Sicherung nennt den konkreten Grund, wenn es die Sprachansagen abweist. Ein Name als Leuchtenadresse wird auch beim Schalten aufgelöst. Meldungen der Sprachansagen sind nicht mehr doppelt maskiert. Die Deinstallation hält die Befehlsbrücke an, bevor sie die retained Themen abräumt.
+- **Formular:** Ein beanstandeter Tafel- oder HomePod-Name bleibt zur Korrektur im Feld stehen.
 
 ## Neu in 0.9.33
 
@@ -684,14 +697,17 @@ unbekanntes Gerät und im Kopf der Sammelzeile.
 `ein`, `aus`, `hell`, `kelvin` und `farbe` mit **demselben** Wert an dieselbe
 Leuchte innerhalb von 60 s gehen nicht erneut hinaus; die Antwort lautet dann
 `SET;OK=1;AKTION=…;UNVERAENDERT=1`. Ein anderer Wert geht sofort hinaus, eine
-Wartezeit gibt es nicht. `szene`, `balken`, `segment`, `musik` und `pt` sind
+Wartezeit gibt es nicht. Bei `geraet=alle` zählt das nur, wenn alle Leuchten
+bestätigt haben. `szene`, `balken`, `segment`, `musik` und `pt` sind
 Ereignisse und gehen immer hinaus. Lässt sich der Merker dieser Bremse nicht
 öffnen, antworten die fünf Befehle mit 503 `GRUND=BREMSE_MERKER`.
 
 Das Token wird beim ersten Öffnen der Oberfläche erzeugt und mit `hash_equals`
 verglichen. Schaltende Aufrufe sind ab Werk gesperrt; rohe `ptReal`-Befehle
 brauchen einen zweiten, eigenen Haken. Was nicht ins Muster passt, wird
-abgewiesen und gemeldet — nie stillschweigend zurechtgebogen.
+abgewiesen und gemeldet — nie stillschweigend zurechtgebogen. Das gilt seit
+0.9.34 auch für Werte über der Grenze (`hell`, `balken`, `hgint`, `geschw`,
+`sens` über 100; `nr`, `art` über 255): HTTP 400 `GRUND=WERT_AUSSERHALB`.
 
 Fehlt ein Einzelwert, sendet der Endpunkt seit 0.9.30 -1 (davor einen Strich) statt einer erfundenen
 Null. Eine Null wäre eine stille Falschaussage, und in der Loxone-App sähe

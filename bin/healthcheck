@@ -1,0 +1,36 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Govee - Anschluss an den LoxBerry-Healthcheck (0.9.34, Bauart Weatherdata, HomePod4Lox, Audioserver NG).
+ *
+ * LoxBerry ruft bin/healthcheck als loxberry auf - einmal mit 'title', einmal mit 'check'. Antwort: JSON mit desc,
+ * status, result, logfile; Status 3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis. NUR AUS DATEIEN: kein Netz, keine
+ * Selbstheilung, nichts angelegt. Die Stufen rechnet gv_gesundheit(). Adressen, Token und Schluessel stehen nie in der Antwort.
+ */
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+$gv_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+if ($gv_was === 'title') {
+    echo "Govee\n";
+    exit(0);
+}
+if (basename(dirname(__DIR__)) === 'plugins' && basename(dirname(dirname(__DIR__))) === 'bin') {
+    $gv_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/gv_lib.php';
+} else {
+    $gv_lib = dirname(__DIR__) . '/webfrontend/html/gv_lib.php';
+}
+if (!is_file($gv_lib)) {
+    echo json_encode(array('desc' => 'Govee', 'status' => 3,
+        'result' => 'Die Bibliothek gv_lib.php wurde nicht gefunden - das Plugin ist unvollstaendig installiert.')) . "\n";
+    exit(0);
+}
+require_once $gv_lib;
+list($gv_status, $gv_text) = gv_gesundheit();
+echo json_encode(array(
+    'desc'    => 'Govee',
+    'status'  => (int) $gv_status,
+    'result'  => (string) $gv_text,
+    'logfile' => (string) gv_paths()['log'],
+), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+exit(0);

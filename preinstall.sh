@@ -11,9 +11,15 @@
 # Geraet/2026-09-05/08_plugininstall.pl).
 #
 # Eine Aktualisierung erkennt es allein an der Marke
-# data/plugins/<ordner>.upgrade_laeuft, die preupgrade.sh als Erstes anlegt
-# (kein Altersvergleich). Dann tut es nichts: die Zweitschriften braucht
-# postinstall.sh zum Zurueckspielen.
+# data/plugins/<ordner>.upgrade_laeuft, die preupgrade.sh als Erstes anlegt.
+# Dann tut es nichts: die Zweitschriften braucht postinstall.sh zum
+# Zurueckspielen. Seit 0.9.34 gilt eine Marke, die marke_sperrt() in
+# bin/dienst.sh nicht mehr gelten liesse (aelter als 3600 s, mehr als 300 s aus
+# der Zukunft, keine Zahl), als verwaist: Sie wird entfernt und gemeldet, und es
+# geht weiter wie bei einer Neuinstallation. preupgrade.sh und dieses Skript
+# trennt nur der Purge, also Sekunden; bis 0.9.33 liess der Rest einer
+# abgebrochenen Aktualisierung eine spaetere Neuinstallation alte Token und den
+# Cloud-Schluessel einspielen. Ohne lesbare Uhr gilt die Marke weiter (wie dort).
 #
 # Ohne Marke ist es eine NEUINSTALLATION. Liegengebliebene Zweitschriften
 # einer frueheren Installation - <ordner>.backup.json (Konfiguration mit
@@ -53,8 +59,27 @@ esac
 
 MARKE="$BASE/data/plugins/$PFOLDER.upgrade_laeuft"
 if [ -f "$MARKE" ]; then
-    # Aktualisierung: nichts zu tun, postinstall.sh spielt zurueck.
-    exit 0
+    GV_VERWAIST=0
+    GV_JETZT=$(date +%s 2>/dev/null)
+    GV_SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$GV_JETZT" in
+        ''|*[!0-9]*) ;;
+        *)  case "$GV_SEIT" in
+                ''|*[!0-9]*) GV_VERWAIST=1 ;;
+                *)  GV_ALTER=$((GV_JETZT - GV_SEIT))
+                    if [ "$GV_ALTER" -lt -300 ] || [ "$GV_ALTER" -gt 3600 ]; then GV_VERWAIST=1; fi ;;
+            esac ;;
+    esac
+    if [ "$GV_VERWAIST" = 0 ]; then
+        # Aktualisierung: nichts zu tun, postinstall.sh spielt zurueck.
+        exit 0
+    fi
+    # Laesst sie sich nicht entfernen, findet postinstall.sh sie, aber keine Zweitschrift mehr: es spielt nichts zurueck.
+    if rm -f "$MARKE" 2>/dev/null; then
+        echo "<WARNING> Eine verwaiste Marke einer abgebrochenen Aktualisierung wurde entfernt - das hier gilt als Neuinstallation."
+    else
+        echo "<WARNING> Die verwaiste Marke $MARKE liess sich nicht entfernen - das hier gilt trotzdem als Neuinstallation."
+    fi
 fi
 
 SB="$BASE/config/plugins/$PFOLDER.backup"

@@ -15,6 +15,10 @@
 ARGV3=$3
 ARGV5=$5
 PFOLDER="${ARGV3:-govee}"
+# 0.9.34: dieselbe Pruefung wie MGiSmart und Bewaesserung - ein Ordnername mit "/" oder "." waere ein Pfad hinaus.
+case "$PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER' - nichts angelegt."; exit 2 ;;
+esac
 BASE="${ARGV5:-$LBHOMEDIR}"
 
 # ---------- Die Wurzel: GELESEN, nicht geraten ----------
@@ -44,7 +48,10 @@ gv_wurzel_suchen() {
     return 1
 }
 SELF=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
-if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ]; then
+# 0.9.34: general.json wird auch von $5 und $LBHOMEDIR verlangt; bis 0.9.33 nur von der Suche (ein fremder Baum mit den
+# beiden Ordnern galt als Wurzel).
+if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
+   || [ ! -f "$BASE/config/system/general.json" ]; then
     BASE=$(gv_wurzel_suchen "$SELF") || BASE=""
 fi
 if [ -z "$BASE" ]; then
@@ -132,6 +139,23 @@ NETZ_PDIR="$PFOLDER"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
 BK="$BASE/config/plugins/$PFOLDER.backup.json"
 CF="$PCONFIG/govee.json"
+# 0.9.34: atomar, Bauart Weatherdata 0.9.4 (wd_hinlegen) und MGiSmart: die Kopie entsteht als <Ziel>.neu.<pid>, traegt
+# 0600 BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann mit mv an ihren Platz gestellt. Bis 0.9.33 stand
+# hier cp -p auf das Ziel: scheiterte es mittendrin, war die heile Zweitschrift bzw. Konfiguration schon angefressen, und
+# fuer einen Augenblick trug die Kopie die Rechte der Quelle. Ein Verzeichnis als Ziel ist ein Fehlschlag (mv legte
+# sonst hinein und meldete Erfolg). Wortgleich in preupgrade.sh und postinstall.sh.
+gv_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    gv_neu="$2.neu.$$"
+    rm -f "$gv_neu" 2>/dev/null
+    if { : > "$gv_neu"; } 2>/dev/null && chmod 600 "$gv_neu" 2>/dev/null \
+       && cp "$1" "$gv_neu" 2>/dev/null && cmp -s "$1" "$gv_neu" \
+       && mv -f "$gv_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$gv_neu" 2>/dev/null
+    return 1
+}
 gv_zurueck() {   # $1 Datei, $2 Zweitschrift, $3 Art, $4 Name fuer die Meldung
     [ -f "$2" ] || return 0
     gv_inhalt "$1" "$3"; gv_z=$?
@@ -148,13 +172,11 @@ gv_zurueck() {   # $1 Datei, $2 Zweitschrift, $3 Art, $4 Name fuer die Meldung
     fi
     if [ -s "$1" ] && [ "$(cat "$1" 2>/dev/null)" != "{}" ]; then
         gv_weg="$1.kaputt.$(date +%Y%m%d%H%M%S)"
-        if cp -p "$1" "$gv_weg" 2>/dev/null; then
-            chmod 600 "$gv_weg" 2>/dev/null
+        if gv_hinlegen "$1" "$gv_weg"; then
             echo "<INFO> Die bisherige $4 trug keine Einstellungen; sie liegt als $(basename "$gv_weg") daneben."
         fi
     fi
-    if cp -p "$2" "$1" 2>/dev/null; then
-        chmod 600 "$1" 2>/dev/null
+    if gv_hinlegen "$2" "$1"; then
         echo "<OK> $4 aus der Zweitschrift wiederhergestellt."
     else
         echo "<WARNING> $4 liess sich nicht zurueckspielen. Die Zweitschrift"
@@ -192,8 +214,7 @@ if gv_ist_upgrade; then
         if [ "$gv_n" = 2 ] || [ "$gv_a" = 2 ]; then
             echo "<WARNING> Die Zweitschrift aus 0.9.8 liess sich nicht pruefen - sie bleibt liegen: $ALT"
         elif [ "$gv_n" = 1 ] && [ "$gv_a" = 0 ]; then
-            if cp -p "$ALT" "$BK" 2>/dev/null; then
-                chmod 0600 "$BK" 2>/dev/null
+            if gv_hinlegen "$ALT" "$BK"; then
                 echo "<OK> Zweitschrift aus 0.9.8 uebernommen."
                 rm -f "$ALT"
             else

@@ -151,6 +151,13 @@ if [ -n "$WAISEN" ]; then
     echo "<INFO> Ein Dienst ohne PID-Datei lief und wurde beendet (PID $WAISEN)."
 fi
 
+# 0.9.34: die Befehlsbruecke VOR dem Abraeumen anhalten. Sonst nimmt sie in der Zwischenzeit Befehle an und schreibt ihr
+# retained status/befehle gleich wieder hinein. Der Block weiter unten (Nachzaehlen, Optionsdateien) bleibt.
+if [ -f "$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh" ]; then
+    BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+    timeout 40 bash "$BBSH" stop >/dev/null 2>&1
+fi
+
 # ---- Zurueckbehaltene MQTT-Themen abraeumen (M5, Entscheidung 3) ----
 #
 # Seit dem Durchgang 29.09.2026 gehen Zustaende retained hinaus. NACH dem

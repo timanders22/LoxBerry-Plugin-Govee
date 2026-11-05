@@ -152,16 +152,18 @@ if ($gv_post && isset($_POST['vorlage'])) {
 
 /* ---------------- Sicherung herunterladen ---------------- */
 /* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
-if ($gv_post && isset($_POST['ansage_test'])) {
+/* 0.9.34: unmaskiert, die Ausgabe (Kasten oben auf der Seite) maskiert selbst; bis 0.9.33 stand ein "&" doppelt maskiert da.
+ * Die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n statt ansage_test (Bauart Bewaesserung). */
+if ($gv_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     list($gv_at, $gv_ag) = gv_ansage_test();
-    if ($gv_at) { $gv_meldungen[] = gv_e(gv_t('ANSAGEPLUGIN.M_TEST_OK')); } else { $gv_fehler[] = gv_e(gv_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $gv_ag); }
+    if ($gv_at) { $gv_meldungen[] = gv_t('ANSAGEPLUGIN.M_TEST_OK'); } else { $gv_fehler[] = gv_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $gv_ag; }
     $gv_tab = 'tab-settings';
 }
 if ($gv_post && isset($_POST['ansage_speichern'])) {
     list($gv_ao, $gv_af, $gv_ah) = gv_ansage_post($_POST);
-    if ($gv_af) { foreach ($gv_af as $gv_ax) { $gv_fehler[] = gv_e($gv_ax); } }
-    elseif ($gv_ao) { $gv_meldungen[] = gv_e(trim(gv_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $gv_ah))); }
-    else { $gv_fehler[] = gv_e(gv_t('ANSAGEPLUGIN.M_FEHL')); }
+    if ($gv_af) { foreach ($gv_af as $gv_ax) { $gv_fehler[] = $gv_ax; } }
+    elseif ($gv_ao) { $gv_meldungen[] = trim(gv_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $gv_ah)); }
+    else { $gv_fehler[] = gv_t('ANSAGEPLUGIN.M_FEHL'); }
     $gv_tab = 'tab-settings';
 }
 if ($gv_post && isset($_POST['sicherung_holen'])) {

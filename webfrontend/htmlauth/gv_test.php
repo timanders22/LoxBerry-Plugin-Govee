@@ -571,7 +571,11 @@ function gv_endpunkt_probe($erzwingen = false, $hoechstalter = 300)
     }
     $geraete = gv_geraete();
     $nr = $geraete ? (int) array_keys($geraete)[0] : 1;
-    $adresse = 'http://127.0.0.1/plugins/' . $p['plugin'] . '/index.php?token='
+    /* 0.9.34: der Webport aus general.json (ansage_webport(), Rueckfall 80). Bis 0.9.33 stand hier fest Port 80: auf
+     * einem LoxBerry mit anderem Webport meldete die Zeile einen kaputten Endpunkt, der keiner war. */
+    $gv_ep_port = (int) gv_ansage_k()['port'];
+    $adresse = 'http://127.0.0.1' . (($gv_ep_port > 0 && $gv_ep_port !== 80) ? ':' . $gv_ep_port : '')
+             . '/plugins/' . $p['plugin'] . '/index.php?token='
              . rawurlencode(gv_token()) . '&aktion=status&geraet=' . $nr;
     $erg = array('ts' => time(), 'alter' => 0, 'lage' => 'unbekannt', 'code' => 0, 'text' => '');
     /* Eigenes Merkmal fuer "die Anfrage ist durchgelaufen". Frueher stand die
