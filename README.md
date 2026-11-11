@@ -3,9 +3,15 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.36 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.37 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.37
+
+- **Konfiguration wird vervollständigt.** Fehlen in `govee.json` Einstellungen, die eine spätere Fassung eingeführt hat, trägt der Dienst sie jetzt einmal mit ihrer Vorgabe in die Datei ein – nach seinem Start, und nach einer Aktualisierung, sobald diese abgeschlossen ist. Bis 0.9.36 ergänzte das Plugin sie nur beim Lesen im Speicher; in der Datei standen sie erst nach dem nächsten Speichern im Formular. Die Einstellungen, mit denen das Plugin arbeitet, ändern sich dadurch nicht: eingetragen wird genau der Wert, der schon bisher galt.
+- Geschrieben wird nur in eine Datei mit gültigem Aktionstoken, nur wenn wirklich etwas fehlt, nicht während einer Aktualisierung und mit denselben Rechten (0600) und derselben Zweitschrift wie beim Speichern. Vorhandene Werte bleiben wörtlich stehen, auch unbekannte Schlüssel. Leere Objekte (`{}`) bleiben dabei leere Objekte, oben wie verschachtelt, und werden nicht zu einer leeren Liste (`[]`). Das Protokoll nennt die Namen der eingetragenen Einstellungen, nie ihre Werte.
+- Geprüft auf dem Arbeitsplatz unter PHP 7.4 und 8.4 mit einem Prüfstand in nachgebildeter Gerätegestalt; am LoxBerry noch nicht gemessen.
 
 ## Neu in 0.9.36
 

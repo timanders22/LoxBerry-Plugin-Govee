@@ -495,6 +495,102 @@ function gv_config_speichern($cfg)
     return true;
 }
 
+/** Leere Objekte des Rohtextes ($o, json_decode ohne true) im Feld $a wieder als Objekt fuehren (11.11.2026),
+ *  damit json_encode() sie als {} und nicht als [] schreibt - oben wie verschachtelt, auch unter fremden
+ *  Schluesseln. Nur fuer gv_config_vervollstaendigen(); das Speichern im Formular bleibt, wie es ist.
+ *  Bauart Bewaesserung 0.9.56 (bw_json_leere_objekte()). */
+function gv_json_leere_objekte($a, $o)
+{
+    if (!is_array($a)) { return $a; }
+    if (is_object($o)) {
+        if (!get_object_vars($o) && $a === array()) { return new stdClass(); }
+        foreach ($a as $k => $v) {
+            $ks = (string) $k;
+            if (is_array($v) && property_exists($o, $ks)) { $a[$k] = gv_json_leere_objekte($v, $o->$ks); }
+        }
+    } elseif (is_array($o)) {
+        foreach ($a as $k => $v) {
+            if (is_array($v) && array_key_exists($k, $o)) { $a[$k] = gv_json_leere_objekte($v, $o[$k]); }
+        }
+    }
+    return $a;
+}
+
+/**
+ * Konfiguration vervollstaendigen (seit 0.9.37, Regeln/05 "Die Konfiguration
+ * wird vervollstaendigt, nicht nur ergaenzt"; Bauform Docker NG 1.3.7).
+ *
+ * Bis 0.9.36 ergaenzte gv_config() fehlende Schluessel bei jedem Lesen nur
+ * im Speicher; in govee.json kamen sie erst mit dem naechsten Speichern im
+ * Formular. Aufgerufen vom Dienst (bin/govee_dienst.php) vor dem Lesen der
+ * Konfiguration seiner Runde - einmal nach dem Start, und solange die Marke
+ * der Aktualisierung liegt, in jeder Runde erneut, bis sie gefallen ist:
+ * postupgrade.sh startet den Dienst, bevor es die Marke wegraeumt.
+ *
+ * - Nur mit LoxBerry-Wurzel (kein Archivmodus), nicht waehrend einer
+ *   Aktualisierung (gv_upgrade_marke(), dieselben Grenzen wie dienst.sh).
+ * - Nur, wenn govee.json lesbar ist, ein Objekt ist und ein gueltiges, nicht
+ *   leeres Aktionstoken traegt (gv_token_gueltig(), dasselbe Merkmal, das
+ *   der Endpunkt verlangt). Eine fehlende, leere ("{}") oder kaputte Datei
+ *   ist Sache der Selbstheilung in gv_config().
+ * - Geschrieben werden die WERTE AUS DER DATEI plus die fehlenden Vorgaben;
+ *   fremde Schluessel bleiben stehen. Fehlende Schluessel bekommen den Wert,
+ *   den gv_config() fuer sie liest - das ist hier die Vorgabe, denn
+ *   gv_config() kennt keine Lese-Regel fuer Bestandsdateien. Die Uebernahme
+ *   einer ansage.json (gv_ansage_cfg(), Vermerk ansage_aus_datei) bleibt
+ *   davon unberuehrt: der nachgetragene Vermerk ist die Vorgabe 0.
+ * - Nur die Schluessel der Vorgaben (die schreibt auch das Speichern), nur
+ *   oberste Ebene, nur wenn einer fehlt - damit bleibt es bei einem
+ *   Schreibvorgang.
+ * - Geschrieben wird ueber gv_config_speichern() (0600, Zweitschrift wie
+ *   beim Speichern). Genau eine Protokollzeile mit den Namen, nie Werte.
+ *
+ * Rueckgabe: array('stand' => ohne_wurzel|ruht|ohne_datei|ohne_merkwort
+ *                  |vollstaendig|ergaenzt|fehler, 'schluessel' => array(...))
+ */
+function gv_config_vervollstaendigen()
+{
+    $p = gv_paths();
+    if ($p['home'] === '') {
+        return array('stand' => 'ohne_wurzel', 'schluessel' => array());
+    }
+    list(, $gv_marke_gilt) = gv_upgrade_marke();
+    if ($gv_marke_gilt) {
+        return array('stand' => 'ruht', 'schluessel' => array());
+    }
+    clearstatcache(true, $p['config']);
+    if (!is_file($p['config'])) {
+        return array('stand' => 'ohne_datei', 'schluessel' => array());
+    }
+    $roh = @file_get_contents($p['config']);
+    $datei = is_string($roh) ? json_decode($roh, true) : null;
+    if (!is_array($datei) || !array_key_exists('aktionstoken', $datei)
+        || !gv_token_gueltig($datei['aktionstoken'])) {
+        return array('stand' => 'ohne_merkwort', 'schluessel' => array());
+    }
+    // Ein leeres Objekt der Datei ({}) bliebe nach json_decode(..., true) ein leeres Feld und kaeme beim
+    // Schreiben als [] zurueck - der Rohwert wird erhalten, bevor ergaenzt wird (11.11.2026).
+    $datei = gv_json_leere_objekte($datei, json_decode($roh));
+    $fehlend = array();
+    foreach (gv_vorgaben() as $k => $w) {
+        if (!array_key_exists($k, $datei)) {
+            $datei[$k] = $w;
+            $fehlend[] = $k;
+        }
+    }
+    if (!$fehlend) {
+        return array('stand' => 'vollstaendig', 'schluessel' => array());
+    }
+    if (!gv_config_speichern($datei)) {
+        gv_log('Konfiguration NICHT vervollstaendigt: govee.json liess sich nicht schreiben ('
+            . count($fehlend) . ' fehlende Schluessel).');
+        return array('stand' => 'fehler', 'schluessel' => $fehlend);
+    }
+    gv_log('Konfiguration vervollstaendigt - ' . count($fehlend)
+        . ' fehlende Vorgaben in govee.json geschrieben: ' . implode(', ', $fehlend));
+    return array('stand' => 'ergaenzt', 'schluessel' => $fehlend);
+}
+
 /**
  * Der Cloud-Schluessel steht in einer EIGENEN Datei mit Rechten 0600 - nicht
  * in der Konfiguration, die die Oberflaeche anzeigt (Hausregel).

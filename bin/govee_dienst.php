@@ -931,8 +931,19 @@ $gv_letzte_runde = 0;
 $gv_letzte_suche = 0;
 $gv_letzte_cloud = 0;
 $gv_runden = 0;
+/* Seit 0.9.37 (Regeln/05): fehlende Vorgaben einmal in govee.json schreiben,
+ * vor dem Lesen der Konfiguration der Runde. Einmal nach dem Start; liegt die
+ * Marke der Aktualisierung noch (postupgrade.sh startet den Dienst vor dem
+ * Wegraeumen), ruht es und wird in der naechsten Runde wiederholt, bis sie
+ * gefallen ist. Geschrieben wird nur, wenn etwas fehlt, und nur in eine Datei
+ * mit Aktionstoken (gv_config_vervollstaendigen() in gv_lib.php). */
+$gv_vv_offen = true;
 
 do {
+    if ($gv_vv_offen) {
+        $gv_vv = gv_config_vervollstaendigen();
+        $gv_vv_offen = ($gv_vv['stand'] === 'ruht');
+    }
     /* bis 0.9.31 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
     $gv_lauf_cfg = gv_config();
     $jetzt = time();
