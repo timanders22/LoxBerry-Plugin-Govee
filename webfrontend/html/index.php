@@ -112,7 +112,9 @@ if ($gv_selbsttest) {
 $gv_lesend = array('status', 'liste', 'szenen', 'roh');
 $gv_schaltend = array('ein', 'aus', 'hell', 'kelvin', 'farbe', 'szene', 'balken',
                       'segment', 'musik', 'pt', 'abruf', 'suche');
-$gv_aktion = isset($_GET['aktion']) ? (string) $_GET['aktion'] : 'status';
+/* 0.9.38: is_string() vor der Umwandlung - aktion[]=... ergab unter PHP 8 eine Warnung im Protokoll; ein Feld
+ * ist wie eine unbekannte Aktion zu behandeln (400). */
+$gv_aktion = !isset($_GET['aktion']) ? 'status' : (is_string($_GET['aktion']) ? $_GET['aktion'] : '');
 if (!in_array($gv_aktion, array_merge($gv_lesend, $gv_schaltend), true)) {
     http_response_code(400);
     echo "FEHLER;OK=0;GRUND=UNBEKANNTE_AKTION\n";
@@ -130,8 +132,11 @@ function gv_param($name, $muster, $vorgabe = '')
     if (!isset($_GET[$name]) || $_GET[$name] === '') {
         return $vorgabe;
     }
-    $w = (string) $_GET[$name];
-    if (!preg_match($muster, $w)) {
+    /* 0.9.38: ein Feld statt einer Zeichenkette wird abgewiesen, ohne Umwandlung (unter PHP 8 sonst eine Warnung
+     * im Protokoll), und das Muster gilt bis zum Ende der Zeichenkette: Modifikator D, gleichbedeutend mit \z
+     * (Regeln/05) - mit $ allein ging ein Zeilenumbruch am Ende durch. */
+    $w = $_GET[$name];
+    if (!is_string($w) || preg_match($muster . 'D', $w) !== 1) {
         http_response_code(400);
         echo "FEHLER;OK=0;GRUND=PARAMETER\n";
         echo 'Der Wert von ' . $name . " passt nicht ins erlaubte Muster.\n";

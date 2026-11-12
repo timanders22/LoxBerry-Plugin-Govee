@@ -3,9 +3,13 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.37 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.38 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.38
+
+- **Loxone-Endpunkt:** Ein Parameter mit einem Zeilenumbruch am Ende (etwa `wert=50%0A`, `hex=ff8800%0A`, `geraet=1%0A`) wird jetzt wie jeder andere Wert außerhalb des Musters mit `GRUND=PARAMETER` abgewiesen; bis 0.9.37 ging er durch. Ein Parameter, der als Feld kommt (`aktion[]=…`, `wert[]=…`), wird wie bisher abgewiesen, schreibt unter PHP 8 aber keine Warnung mehr ins Protokoll. Antworten und Status für gültige Aufrufe bleiben unverändert. Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4, nicht am Gerät.
 
 ## Neu in 0.9.37
 
