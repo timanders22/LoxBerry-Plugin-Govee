@@ -325,6 +325,9 @@ function gv_vorgaben()
         /* Gruppe 3 / MQTT (0.9.30): Haken "Befehle ueber MQTT annehmen" der Befehlsbruecke, ab Werk aus.
          * Schaltende Befehle brauchen zusaetzlich steuerung_ein (zweiter Haken, Entwurf gv E7). */
         'befehle_mqtt_ein' => 0,
+        /* 0.9.40: Haken "Farbe aus einer Lichtsteuerung annehmen" (Befehl loxfarbe, HTTP und MQTT), ab Werk aus.
+         * Gilt zusaetzlich zu steuerung_ein und, auf dem MQTT-Weg, zu befehle_mqtt_ein. */
+        'loxfarbe_ein' => 0,
     );
 }
 
@@ -2625,7 +2628,13 @@ function gv_selbsttest()
     }
     $zeilen[] = ($gv_zok ? '[ OK ] ' : '[FEHL] ') . 'befehle_zuordnung: ' . $gv_ztext;
 
-    $anzahl = count($faelle) + count(gv_szenen()) + 1;
+    /* Vierte Ebene (0.9.40): die Entschluesselung der Lichtsteuerungs-Farbe (loxfarbe), jeder Fall zaehlt einzeln. */
+    list($gv_lfn, $gv_lff, $gv_lfl) = gv_loxfarbe_selbsttest();
+    $fehl += $gv_lff;
+    $zeilen[] = ($gv_lff === 0 ? '[ OK ] ' : '[FEHL] ') . 'loxfarbe: ' . ($gv_lfn - $gv_lff) . ' von ' . $gv_lfn
+              . ' Faellen wie erwartet' . ($gv_lff ? ' - abweichend: ' . implode('; ', $gv_lfl) : '');
+
+    $anzahl = count($faelle) + count(gv_szenen()) + 1 + $gv_lfn;
     array_unshift($zeilen, sprintf('%d Faelle geprueft, %d Fehlschlaege.', $anzahl, $fehl), '');
     return array($anzahl, $fehl, implode("\n", $zeilen));
 }
@@ -3569,6 +3578,17 @@ function gv_vorlage_lox($nummer = 1)
         'on'      => sprintf($pfad, 'farbe') . '&wert=<v.0>',
         'analog'  => true,
     );
+    /* 0.9.40: die Zahl eines Farbkreises der Lichtsteuerung (RGB in Prozent oder Lumitech), mit <v> wie gemessen.
+     * Wirkt nur mit dem Haken "Farbe aus einer Lichtsteuerung annehmen"; ueber LAN und Cloud, weil sie in hell + farbe
+     * bzw. hell + kelvin zerfaellt. */
+    $cmds[] = array(
+        /* Titel nach der Form dieser Datei ("<Leuchte> - <Befehl> (ueber LoxBerry)"), nicht "Govee ..." wie in der
+         * MQTT-Vorlage: Config zeigt Bausteine ohne Geraeteknoten, der Leuchtenname gehoert hinein (siehe oben). */
+        'title'   => $name . ' - ' . gv_titel('GV_XML.LOX_LOXFARBE') . $lb_zusatz,
+        'comment' => gv_klartext('GV_XML.LOX_LOXFARBE_K'),
+        'on'      => sprintf($pfad, 'loxfarbe') . '&wert=' . gv_loxfarbe_platzhalter('loxfarbe', '<v.0>'),
+        'analog'  => true,
+    );
     /* Ueber die Cloud gibt es keine Szenen - gv_befehl_cloud() lehnt sie ab.
      * Ein Baustein, der nie wirkt, gehoert nicht in die Vorlage (U9). */
     if ($g['art'] !== 'cloud') {
@@ -3752,11 +3772,12 @@ function gv_warteschlange_ordner()
 /**
  * Die Einstellungsschluessel, die erst nach einer Fassung dazukamen: fehlen sie in einer Sicherung, gilt ihre Vorgabe
  * (Haken der Befehlsbruecke ab Werk aus) - sonst wiese das Zurueckspielen jede Sicherung bis 0.9.29 als unvollstaendig
- * ab (Bauart mo_spaet_schluessel(), Robonect 1.1.24).
+ * ab (Bauart mo_spaet_schluessel(), Robonect 1.1.24). loxfarbe_ein seit 0.9.40 (ab Werk aus), sonst wiese das
+ * Zurueckspielen jede Sicherung bis 0.9.39 ab.
  */
 function gv_spaet_schluessel()
 {
-    return array('befehle_mqtt_ein');
+    return array('befehle_mqtt_ein', 'loxfarbe_ein');
 }
 
 /**
@@ -3987,6 +4008,304 @@ function gv_abo_datei($schreiben = false)
     return array($pfad, $da);
 }
 
+/* ---------------- Farbe aus einer Loxone-Lichtsteuerung (loxfarbe, 0.9.40) ----------------
+ * Ein Farbkreis einer Lichtsteuerung schickt ueber einen analogen virtuellen Ausgang EINE Zahl (gemessen 17.11.2026 am
+ * Broker, Regeln/07 "Ein Farbkreis einer Lichtsteuerung schickt ueber einen virtuellen Ausgang eine Zahl"):
+ *   RGB-Kreis       B*1000000 + G*1000 + R, jeder Kanal 0 bis 100 PROZENT (Rot 100, Gruen 100000, Weiss 100100100)
+ *   Lumitech-Kreis  200000000 + Helligkeit*10000 + Kelvin (Kelvin auf vier Stellen gekappt: 16000 kommt als 9999)
+ *   Aus             0
+ * Das ist weder r*65536+g*256+b (Befehl farbe) noch Text. Der Befehl loxfarbe steht deshalb DANEBEN; farbe, kelvin,
+ * hell, ein und aus behalten ihre Bedeutung. Ausgefuehrt wird er als die bestehenden Befehle hell + farbe bzw.
+ * hell + kelvin (gv_befehl_annehmen(), mit Befehlsbremse und Warteschlange wie bisher), Aus als hell 0. Ab Werk aus
+ * (Haken loxfarbe_ein). */
+
+/** Groesster zulaessiger Wert: Lumitech, Helligkeit 100, Kelvin 9999. */
+define('GV_LOXFARBE_MAX', 201009999);
+/** Ab hier ist der Wert die Lumitech-Form. */
+define('GV_LOXFARBE_LUMITECH', 200000000);
+
+/**
+ * Die Zahl einer Lichtsteuerung entschluesseln - rein: kein Netz, keine Datei, keine Konfiguration.
+ * Angenommen werden eine ganze Zahl (int) oder eine Zeichenkette aus 1 bis 9 Ziffern; Leerzeichen, Vorzeichen, Komma,
+ * Punkt und alles andere werden abgewiesen, nie zurechtgebogen. Alle Beanstandungen werden gesammelt (je Kanal eine).
+ * Rueckgabe: array('ok' => bool, 'fehler' => Liste von Saetzen, 'art' => 'aus'|'rgb'|'lumitech'|'', 'hell' => 0..100,
+ * 'r','g','b' => 0..255 (auf den groessten Kanal gestreckt), 'rp','gp','bp' => 0..100 (Prozent wie gesendet),
+ * 'kelvin' => Zahl oder null, 'wert' => die gelesene Zahl oder null).
+ */
+function gv_loxfarbe_lesen($wert)
+{
+    $l = array('ok' => false, 'fehler' => array(), 'art' => '', 'hell' => 0, 'r' => 0, 'g' => 0, 'b' => 0,
+               'rp' => 0, 'gp' => 0, 'bp' => 0, 'kelvin' => null, 'wert' => null);
+    if (is_int($wert)) {
+        $v = $wert;
+        if ($v < 0) {
+            $l['fehler'][] = 'Der Wert ist negativ; erlaubt sind 0 bis ' . GV_LOXFARBE_MAX . '.';
+            return $l;
+        }
+    } elseif (is_string($wert)) {
+        if ($wert === '') {
+            $l['fehler'][] = 'Der Wert fehlt.';
+            return $l;
+        }
+        if (preg_match('/^-[0-9]+\z/', $wert)) {
+            $l['fehler'][] = 'Der Wert ist negativ; erlaubt sind 0 bis ' . GV_LOXFARBE_MAX . '.';
+            return $l;
+        }
+        if (preg_match('/^-?[0-9]+[.,][0-9]+\z/', $wert)) {
+            $l['fehler'][] = 'Der Wert ist keine ganze Zahl.';
+            return $l;
+        }
+        if (!preg_match('/^[0-9]+\z/', $wert)) {
+            $l['fehler'][] = 'Der Wert ist keine Zahl aus Ziffern.';
+            return $l;
+        }
+        if (strlen($wert) > 9) {
+            $l['fehler'][] = 'Der Wert liegt ueber ' . GV_LOXFARBE_MAX . '.';
+            return $l;
+        }
+        $v = (int) $wert;
+    } else {
+        $l['fehler'][] = 'Der Wert ist keine ganze Zahl.';
+        return $l;
+    }
+    $l['wert'] = $v;
+    if ($v > GV_LOXFARBE_MAX) {
+        $l['fehler'][] = 'Der Wert liegt ueber ' . GV_LOXFARBE_MAX . '.';
+    }
+    if ($v === 0) {
+        $l['art'] = 'aus';
+    } elseif ($v >= GV_LOXFARBE_LUMITECH) {
+        $rest = $v - GV_LOXFARBE_LUMITECH;
+        $h = intdiv($rest, 10000);
+        $k = $rest % 10000;
+        if ($h > 100) {
+            $l['fehler'][] = 'Lumitech: Helligkeit ' . $h . ' liegt ueber 100.';
+        }
+        if ($h === 0) {
+            $l['art'] = 'aus';
+        } else {
+            $l['art'] = 'lumitech';
+            $l['hell'] = $h;
+            $l['kelvin'] = $k;
+        }
+    } else {
+        $rp = $v % 1000;
+        $gp = intdiv($v, 1000) % 1000;
+        $bp = intdiv($v, 1000000);
+        foreach (array('Rot' => $rp, 'Gruen' => $gp, 'Blau' => $bp) as $kanal => $p) {
+            if ($p > 100) {
+                $l['fehler'][] = 'RGB: ' . $kanal . ' ' . $p . ' liegt ueber 100 Prozent.';
+            }
+        }
+        $max = max($rp, $gp, $bp);
+        $l['art'] = 'rgb';
+        $l['rp'] = $rp;
+        $l['gp'] = $gp;
+        $l['bp'] = $bp;
+        $l['hell'] = $max;
+        /* Auf den groessten Kanal gestreckt, ganzzahlig gerundet (halbe Stufe nach oben): round(p / max * 255) ohne
+         * Gleitkomma, damit 7.4 und 8.x dieselbe Stufe liefern. $max > 0, weil $v > 0 und jeder Kanal >= 0. */
+        if ($max > 0) {
+            $l['r'] = intdiv(2 * $rp * 255 + $max, 2 * $max);
+            $l['g'] = intdiv(2 * $gp * 255 + $max, 2 * $max);
+            $l['b'] = intdiv(2 * $bp * 255 + $max, 2 * $max);
+        }
+    }
+    if ($l['fehler']) {
+        $l['art'] = '';
+        return $l;
+    }
+    $l['ok'] = true;
+    return $l;
+}
+
+/** Ist loxfarbe ausgeschaltet (Haken "Farbe aus einer Lichtsteuerung annehmen", ab Werk aus)? EINE Stelle fuer
+ *  Endpunkt und Bruecke. */
+function gv_loxfarbe_gesperrt($cfg)
+{
+    return empty($cfg['loxfarbe_ein']);
+}
+
+/** Der Platzhalter fuer den Wert im Loxone-Befehl: fuer loxfarbe <v>, so gemessen am 17.11.2026 (Regeln/07, Befehl
+ *  "publish farbtest/rgb <v>"); fuer jeden anderen Befehl $sonst. EINE Stelle fuer Vorlage und Reiter. */
+function gv_loxfarbe_platzhalter($name, $sonst)
+{
+    return preg_match('#(^|/)loxfarbe\z#', (string) $name) ? '<v>' : $sonst;
+}
+
+/**
+ * Aus einer entschluesselten Zahl die Auftraege mit den BESTEHENDEN Befehlen bauen. Reihenfolge: zuerst hell, dann
+ * farbe bzw. kelvin - Helligkeit 1 schaltet eine ausgeschaltete H61A8 ein (gemessen 18.10.2026, README "Bekannte
+ * Grenzen"), und manche Leuchten gehen erst mit einem Farbbefehl an; beides ist damit abgedeckt. Aus ist hell 0 (auf
+ * LAN und Cloud "aus", gv_nachricht_bauen() und gv_befehl_cloud()); anders als "aus" macht hell 0 in der
+ * Befehlsbremse den gemerkten Helligkeitswert ungueltig, so dass dieselbe Farbe nach dem Ausschalten wieder hinausgeht.
+ * Kelvin wird gegen den eingestellten Bereich JEDER getroffenen Leuchte gehalten, wie kelvin es im Nachrichtenbau tut -
+ * hier aber VOR dem Senden, damit nicht erst die Helligkeit hinausgeht. Eine unbekannte Leuchte meldet danach der
+ * Dienst. Rueckgabe: array(Liste der Auftraege oder null, Liste der Beanstandungen).
+ */
+function gv_loxfarbe_auftraege(array $l, $geraet, $cfg)
+{
+    if (empty($l['ok'])) {
+        return array(null, $l['fehler']);
+    }
+    if ($l['art'] === 'aus') {
+        return array(array(array('aktion' => 'hell', 'wert' => 0)), array());
+    }
+    if ($l['art'] === 'rgb') {
+        return array(array(array('aktion' => 'hell', 'wert' => (int) $l['hell']),
+                           array('aktion' => 'farbe', 'r' => (int) $l['r'], 'g' => (int) $l['g'], 'b' => (int) $l['b'])),
+                     array());
+    }
+    $fehler = array();
+    $alle = gv_geraete($cfg);
+    $ziele = ($geraet === 'alle') ? array_keys($alle) : (isset($alle[(int) $geraet]) ? array((int) $geraet) : array());
+    foreach ($ziele as $nr) {
+        $g = $alle[$nr];
+        if ($l['kelvin'] < $g['kmin'] || $l['kelvin'] > $g['kmax']) {
+            $fehler[] = sprintf('Geraet %d: %d K liegt ausserhalb des eingestellten Bereichs %d bis %d K.',
+                $nr, $l['kelvin'], $g['kmin'], $g['kmax']);
+        }
+    }
+    if ($fehler) {
+        return array(null, $fehler);
+    }
+    return array(array(array('aktion' => 'hell', 'wert' => (int) $l['hell']),
+                       array('aktion' => 'kelvin', 'wert' => (int) $l['kelvin'])), array());
+}
+
+/**
+ * loxfarbe annehmen (aus gv_befehl_annehmen(), fuer Endpunkt und Bruecke). Reihenfolge: "Schreibende Befehle zulassen"
+ * -> Haken loxfarbe_ein -> Wert entschluesseln -> Kelvinbereich -> je Auftrag gv_befehl_annehmen() (Dienst, Bremse,
+ * Warteschlange wie bisher). Scheitert ein Auftrag, gehen die folgenden nicht hinaus. Rueckgabe wie
+ * gv_befehl_annehmen(), dazu 'loxfarbe' (die Entschluesselung) und 'fehler' (Beanstandungen). Gruende:
+ * LOXFARBE_AUS (403), LOXFARBE_WERT und KELVIN_AUSSERHALB (400); UNVERAENDERT nur, wenn jeder Auftrag gebremst war.
+ */
+function gv_loxfarbe_annehmen(array $befehl, $cfg, $quelle)
+{
+    $r = array('ok' => 0, 'grund' => '', 'http' => 200, 'unveraendert' => 0, 'seit' => 0, 'meldung' => '', 'teil' => 0,
+               'loxfarbe' => null, 'fehler' => array());
+    if (gv_befehl_gesperrt('loxfarbe', $cfg)) {
+        $r['grund'] = 'STEUERUNG_AUS';
+        $r['http'] = 403;
+        return $r;
+    }
+    if (gv_loxfarbe_gesperrt($cfg)) {
+        $r['grund'] = 'LOXFARBE_AUS';
+        $r['http'] = 403;
+        $r['meldung'] = 'Haken Farbe aus einer Lichtsteuerung annehmen ist aus (Reiter Einstellungen).';
+        return $r;
+    }
+    $l = gv_loxfarbe_lesen(isset($befehl['wert']) ? $befehl['wert'] : '');
+    $r['loxfarbe'] = $l;
+    if (!$l['ok']) {
+        $r['grund'] = 'LOXFARBE_WERT';
+        $r['http'] = 400;
+        $r['fehler'] = $l['fehler'];
+        $r['meldung'] = implode(' ', $l['fehler']);
+        return $r;
+    }
+    $geraet = isset($befehl['geraet']) ? $befehl['geraet'] : 1;
+    list($auftraege, $fehler) = gv_loxfarbe_auftraege($l, $geraet, $cfg);
+    if ($auftraege === null) {
+        $r['grund'] = 'KELVIN_AUSSERHALB';
+        $r['http'] = 400;
+        $r['fehler'] = $fehler;
+        $r['meldung'] = implode(' ', $fehler);
+        return $r;
+    }
+    $teile = array();
+    $alle_gebremst = true;
+    foreach ($auftraege as $a) {
+        $a['geraet'] = $geraet;
+        $ri = gv_befehl_annehmen($a, $cfg, $quelle);
+        $r['teil'] = ($r['teil'] || !empty($ri['teil'])) ? 1 : 0;
+        $r['seit'] = max($r['seit'], (int) $ri['seit']);
+        if (empty($ri['unveraendert'])) {
+            $alle_gebremst = false;
+        }
+        $teile[] = $a['aktion'] . ': ' . ($ri['unveraendert'] ? 'unveraendert' : (string) $ri['meldung']);
+        if ((int) $ri['ok'] !== 1) {
+            $r['ok'] = (int) $ri['ok'];
+            $r['grund'] = (string) $ri['grund'];
+            $r['http'] = (int) $ri['http'];
+            $r['meldung'] = implode(' | ', $teile);
+            return $r;
+        }
+    }
+    $r['ok'] = 1;
+    $r['unveraendert'] = $alle_gebremst ? 1 : 0;
+    $r['meldung'] = implode(' | ', $teile);
+    return $r;
+}
+
+/**
+ * Die Faelle der Selbstpruefung von gv_loxfarbe_lesen(): die am 17.11.2026 am Broker gemessenen Werte und Fehlfaelle.
+ * Erwartung VORHER von Hand gerechnet: Kanal = round(Prozent / groesster Kanal * 255). Je Fall array(Bezeichnung,
+ * Eingabe, Erwartung); Erwartung array('art', 'hell', 'hex', 'kelvin') oder array('fehler' => Zahl der Beanstandungen).
+ */
+function gv_loxfarbe_faelle()
+{
+    return array(
+        array('RGB Rot hsv(0,100,100)', '100', array('rgb', 100, 'ff0000', null)),
+        array('RGB Gruen hsv(120,100,100)', '100000', array('rgb', 100, '00ff00', null)),
+        array('RGB Blau hsv(240,100,100)', '100000000', array('rgb', 100, '0000ff', null)),
+        array('RGB Weiss hsv(0,0,100)', '100100100', array('rgb', 100, 'ffffff', null)),
+        array('RGB Gelb hsv(60,100,100)', '100100', array('rgb', 100, 'ffff00', null)),
+        array('RGB Rot halb hsv(0,100,50)', '50', array('rgb', 50, 'ff0000', null)),
+        array('RGB hsv(30,80,45)', '9027045', array('rgb', 45, 'ff9933', null)),
+        array('RGB hsv(200,90,73)', '73051007', array('rgb', 73, '18b2ff', null)),
+        array('RGB temp(100,2700)', '34065100', array('rgb', 100, 'ffa657', null)),
+        array('RGB temp(100,6500)', '98099100', array('rgb', 100, 'fffcfa', null)),
+        array('Aus', '0', array('aus', 0, '', null)),
+        array('Lumitech temp(100,2700)', '201002700', array('lumitech', 100, '', 2700)),
+        array('Lumitech temp(100,6500)', '201006500', array('lumitech', 100, '', 6500)),
+        array('Lumitech temp(50,4000)', '200504000', array('lumitech', 50, '', 4000)),
+        array('Lumitech temp(100,1000)', '201001000', array('lumitech', 100, '', 1000)),
+        array('Lumitech temp(100,16000) gekappt', '201009999', array('lumitech', 100, '', 9999)),
+        array('Lumitech Helligkeit 0', '200002700', array('aus', 0, '', null)),
+        array('als Zahl statt Text', 100, array('rgb', 100, 'ff0000', null)),
+        array('negativ', '-1', array('fehler' => 1)),
+        array('Rot 101', '101', array('fehler' => 1)),
+        array('Weiss mit Rot 101', '100100101', array('fehler' => 1)),
+        array('alle drei Kanaele 101', '101101101', array('fehler' => 3)),
+        array('Blau 150 (zwischen RGB und Lumitech)', '150000000', array('fehler' => 1)),
+        array('Lumitech Helligkeit 101', '201010000', array('fehler' => 2)),
+        array('300000000', '300000000', array('fehler' => 2)),
+        array('zehn Stellen', '1000000000', array('fehler' => 1)),
+        array('Komma', '1.5', array('fehler' => 1)),
+        array('Text', 'rot', array('fehler' => 1)),
+        array('leer', '', array('fehler' => 1)),
+        array('Leerzeichen davor', ' 100', array('fehler' => 1)),
+        array('Zeilenumbruch dahinter', "100\n", array('fehler' => 1)),
+        array('Feld', array('100'), array('fehler' => 1)),
+    );
+}
+
+/** Die Selbstpruefung der Entschluesselung. Rueckgabe: array(Anzahl, Fehlschlaege, Liste der abweichenden Faelle). */
+function gv_loxfarbe_selbsttest()
+{
+    $faelle = gv_loxfarbe_faelle();
+    $fehl = array();
+    foreach ($faelle as $f) {
+        list($name, $eingabe, $soll) = $f;
+        $l = gv_loxfarbe_lesen($eingabe);
+        if (isset($soll['fehler'])) {
+            $gut = !$l['ok'] && count($l['fehler']) === $soll['fehler'];
+            $ist = $l['ok'] ? 'angenommen' : count($l['fehler']) . ' Beanstandung(en)';
+        } else {
+            $hex = $l['art'] === 'rgb' ? sprintf('%02x%02x%02x', $l['r'], $l['g'], $l['b']) : '';
+            $gut = $l['ok'] && $l['art'] === $soll[0] && $l['hell'] === $soll[1] && $hex === $soll[2]
+                && $l['kelvin'] === $soll[3];
+            $ist = $l['ok'] ? $l['art'] . ' hell ' . $l['hell'] . ($hex !== '' ? ' ' . $hex : '')
+                . ($l['kelvin'] !== null ? ' ' . $l['kelvin'] . ' K' : '') : implode(' ', $l['fehler']);
+        }
+        if (!$gut) {
+            $fehl[] = $name . ' (' . $ist . ')';
+        }
+    }
+    return array(count($faelle), count($fehl), $fehl);
+}
+
 /* ---------------- Befehlsbruecke ----------------
  * Die Bruecke ruft gv_befehl_annehmen() - dieselbe Funktion wie der Endpunkt webfrontend/html/index.php, mit
  * Quelle 'mqtt' (Entwurf gv 3.2). Die Token-Pruefung bleibt im Endpunkt; auf dem MQTT-Weg ersetzen sie die Anmeldung
@@ -4012,6 +4331,10 @@ function gv_befehl_gesperrt($aktion, $cfg)
 function gv_befehl_annehmen(array $befehl, $cfg, $quelle = 'http')
 {
     $aktion = isset($befehl['aktion']) ? (string) $befehl['aktion'] : '';
+    /* 0.9.40: loxfarbe zerfaellt in hell + farbe bzw. hell + kelvin, jeder Teil laeuft wieder hier durch. */
+    if ($aktion === 'loxfarbe') {
+        return gv_loxfarbe_annehmen($befehl, $cfg, $quelle);
+    }
     $r = array('ok' => 0, 'grund' => '', 'http' => 200, 'unveraendert' => 0, 'seit' => 0, 'meldung' => '', 'teil' => 0);
     if (gv_befehl_gesperrt($aktion, $cfg)) {
         $r['grund'] = 'STEUERUNG_AUS';
@@ -4070,6 +4393,11 @@ function gv_befehl_ergebnis(array $r)
     }
     if ((int) $r['ok'] === 2) {
         return array(false, 'OHNE_ANTWORT');
+    }
+    /* 0.9.40: die Gruende von loxfarbe tragen ihre Beanstandungen in die Quittung (die Bruecke kuerzt auf 120 Zeichen
+     * ASCII, bb_grund_ascii()); alle anderen Gruende bleiben, wie sie waren. */
+    if (in_array($r['grund'], array('LOXFARBE_AUS', 'LOXFARBE_WERT', 'KELVIN_AUSSERHALB'), true) && $r['meldung'] !== '') {
+        return array(false, $r['grund'] . ': ' . $r['meldung']);
     }
     return array(false, $r['grund'] !== '' ? (string) $r['grund'] : 'ABGELEHNT');
 }
@@ -4245,11 +4573,19 @@ function gv_selbsttest_zuordnung()
         return array(false, (string) $fehler);
     }
     $art = array();
+    $lf_bereich = null;
     foreach ($l['befehle'] as $b) {
         $art[$b['name']] = $b['art'];
+        if ($b['name'] === '{geraet}/loxfarbe' && isset($b['min'], $b['max'])) {
+            $lf_bereich = array($b['min'], $b['max']);
+        }
+    }
+    /* 0.9.40: die Bruecke laesst genau 0 bis GV_LOXFARBE_MAX durch; die Kanaele prueft danach gv_loxfarbe_lesen(). */
+    if ($lf_bereich !== array(0, GV_LOXFARBE_MAX)) {
+        return array(false, '{geraet}/loxfarbe hat nicht den Bereich 0 bis ' . GV_LOXFARBE_MAX);
     }
     $soll = array('{geraet}/szene_name' => 'text', '{geraet}/segment' => 'text', '{geraet}/balken_farbe' => 'text',
-                  '{geraet}/balken' => 'ganz', '{geraet}/szene' => 'ganz');
+                  '{geraet}/balken' => 'ganz', '{geraet}/szene' => 'ganz', '{geraet}/loxfarbe' => 'ganz');
     foreach ($soll as $n => $a) {
         if (!isset($art[$n]) || $art[$n] !== $a) {
             return array(false, $n . ' fehlt oder ist nicht ' . $a);
@@ -4344,7 +4680,8 @@ function gv_vorlage_mqtt_befehle($nummer = 1)
             $c['on'] = 'publish ' . $thema . ' ' . gv_mqtt_text_beispiel(basename($name));
             $c['analog'] = false;
         } else {
-            $c['on'] = 'publish ' . $thema . ' <v.0>';
+            /* 0.9.40: loxfarbe mit <v> - so am 17.11.2026 gemessen (Regeln/07); die uebrigen Zahlen bleiben bei <v.0>. */
+            $c['on'] = 'publish ' . $thema . ' ' . gv_loxfarbe_platzhalter($name, '<v.0>');
             $c['analog'] = true;
         }
         $cmds[] = $c;
@@ -5103,7 +5440,7 @@ function gv_regeln()
         ),
         'zeile'     => array('pixel' => array(0, 200), 'kmin' => array(1000, 10000),
                              'kmax' => array(1000, 10000)),
-        'schalter'  => array('mqtt_ein', 'steuerung_ein', 'cloud_ein', 'pt_frei', 'befehle_mqtt_ein'),
+        'schalter'  => array('mqtt_ein', 'steuerung_ein', 'cloud_ein', 'pt_frei', 'befehle_mqtt_ein', 'loxfarbe_ein'),
     );
 }
 
@@ -5539,7 +5876,7 @@ function gv_eingabe_felder($form)
              * wieder da (Entscheidung 19, FEHLER_NR). */
             'liste' => array('g_name', 'g_art', 'g_ip', 'g_sku', 'g_device', 'g_pixel',
                              'g_kmin', 'g_kmax', 'g_pt', 's_name', 's_sku', 's_cmd'),
-            'haken' => array('steuerung_ein', 'pt_frei', 'cloud_ein'),
+            'haken' => array('steuerung_ein', 'pt_frei', 'cloud_ein', 'loxfarbe_ein'),
         );
     }
     if ($form === 'mqtt') {

@@ -3,9 +3,20 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.38 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.40 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.40
+
+- **Farbe aus einer Lichtsteuerung (neuer Befehl `loxfarbe`).** Ein RGB- oder Lumitech-Kreis einer Loxone-Lichtsteuerung schickt über einen analogen virtuellen Ausgang eine Zahl: RGB als `B·1000000 + G·1000 + R` mit jedem Kanal in Prozent (Rot `100`, Grün `100000`, Blau `100000000`, Weiß `100100100`), Lumitech als `200000000 + Helligkeit·10000 + Kelvin` (2700 K bei voller Helligkeit `201002700`), Aus als `0` – am 17.11.2026 am Broker gemessen. Das Plugin nimmt diese Zahl jetzt an: per HTTP `aktion=loxfarbe&geraet=N&wert=<v>`, über MQTT `govee/befehl/geraet<N>/loxfarbe`. Die Helligkeit ist der größte Kanal, die Farbe wird darauf auf 0–255 gestreckt; ausgeführt wird der Befehl als die bisherigen Befehle `hell` und `farbe` bzw. `hell` und `kelvin`, Aus als `hell` 0.
+- **Eigener Haken, ab Werk aus:** *Farbe aus einer Lichtsteuerung annehmen* (Reiter Einstellungen). Ohne ihn wird `loxfarbe` mit `GRUND=LOXFARBE_AUS` abgewiesen, ohne dass etwas an die Leuchte geht. *Schreibende Befehle zulassen* und, über MQTT, *Befehle über MQTT annehmen* gelten zusätzlich.
+- **Abgewiesen und gemeldet, nie zurechtgebogen:** ein Kanal über 100, eine Helligkeit über 100, eine Zahl über 201009999, negative oder nicht ganze Zahlen (`GRUND=LOXFARBE_WERT`, alle Beanstandungen je Zeile) und eine Farbtemperatur außerhalb von *K min* bis *K max* der Leuchte (`GRUND=KELVIN_AUSSERHALB`, bevor die Helligkeit hinausgeht).
+- **Unverändert:** `farbe`, `kelvin`, `hell`, `ein`, `aus` und alle übrigen Befehle, Themen und Antworten. Die Vorlagen „Govee MQTT-Befehle“ und „Stufenlos über den LoxBerry“ enthalten den neuen Befehl „Farbe aus Lichtsteuerung“ (neu einlesen, wer ihn braucht). Der Reiter „Einbindung in Loxone“ zeigt in Schritt 5a die vollständigen Adressen; der Reiter Test prüft die Entschlüsselung an den gemessenen Werten.
+- **Loxone Config:** Beim Verbinden des Kreisausgangs mit dem virtuellen Ausgang stellt Config den Typ des Lichtkreises still auf „Schalter“ zurück (gemessen 17.11.2026). Den Typ nach dem Verbinden erneut einstellen.
+- **Knopf „Dokumentation“:** `plugin.cfg` trägt jetzt `WEBSITE=` mit der Adresse des Repositorys; LoxBerry zeigt den Knopf in der Plugin-Verwaltung nach der Installation dieser Fassung.
+- Geprüft auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am LoxBerry gemessen am 17.11.2026 an einer H60A6 über das Heimnetz: Rot, Grün, Blau, Weiß, Rot mit halber Helligkeit, 2700 K, 6500 K mit 50 % und Aus kamen an; `0` schaltet aus, und nach dem Aus kehrt die Leuchte in ihrer Farbe zurück. Nicht gemessen: H61A8, Leuchten über die Cloud und ein virtueller HTTP-Ausgang am Miniserver (dort `<v>` verwenden; ein Wert mit Nachkommastelle wie `100.0` wird abgewiesen).
+- Die Fassung 0.9.39 wurde nicht veröffentlicht; sie trug nur die Nummer.
 
 ## Neu in 0.9.38
 
@@ -591,6 +602,7 @@ alle vier bestanden.
 | **Gerätesuche** | Multicast 239.255.255.250:4001, findet alle Leuchten mit eingeschaltetem LAN Control samt SKU, Gerätekennung und Firmwarestand |
 | **Zustand lesen** | `devStatus` je Gerät: ein/aus, Helligkeit, Farbtemperatur, RGB — veröffentlicht über das MQTT-Gateway (in Loxone Virtuelle Eingänge, Namen aus der Namenstabelle) und abrufbar über einen Token-Endpunkt |
 | **Grundbefehle** | ein, aus, Helligkeit 1–100, Farbe RGB, Farbtemperatur in Kelvin |
+| **Farbe aus einer Lichtsteuerung** | seit 0.9.40 der Befehl `loxfarbe`: die Zahl, die ein RGB- oder Lumitech-Kreis einer Loxone-Lichtsteuerung über einen analogen virtuellen Ausgang schickt; eigener Haken, ab Werk aus |
 | **Szenen** | 14 aufgezeichnete Szenen für H70C4, H6076 und RGBIC-Streifen, über den nicht dokumentierten `ptReal`-Befehl |
 | **Segmente und Pixel** | zwei Verfahren: *Graffiti* spricht einzelne Pixel an (an der H6076 gemessen), *Bitmaske* ganze Segmente (Form der H70C4) — welches die eigene Leuchte versteht, sagt der Versuch |
 | **Prozentbalken** | „die ersten n Pixel leuchten" — für PV-Leistung, Ladezustand, Programmfortschritt |
@@ -674,7 +686,8 @@ RGBIC-Streifen.
 
 Der Reiter *Einbindung in Loxone* führt in acht Schritten durch beide Richtungen: Werte über MQTT (Gateway
 V1/V2, Namenstabelle für die Virtuellen Eingänge, Ausfallerkennung am Lebenszeichen), Befehle über MQTT
-(Befehlsbrücke, Vorlage „Govee MQTT-Befehle“), die Vorlagen unmittelbar an die Leuchte (Grundbefehle, Szenen
+(Befehlsbrücke, Vorlage „Govee MQTT-Befehle“), seit 0.9.40 in Schritt 5a die Farbe aus einer Lichtsteuerung
+(`loxfarbe`, vollständige Adressen für MQTT und HTTP), die Vorlagen unmittelbar an die Leuchte (Grundbefehle, Szenen
 und Balken) und in Schritt 7 die **Baustein-Listen** der drei Seiten zum Nachbauen. Der Weg über HTTP
 (Zustandsvorlage, stufenlos über den LoxBerry, Token) steht zugeklappt für bestehende Anlagen darunter. Fertig verbunden stehen die Bausteine auf den
 Seiten „Govee“, „Govee Licht“ und „Govee Szenen und Balken“ im
@@ -689,7 +702,9 @@ Lesend: `status`, `liste`, `szenen`, `roh`. `status` nimmt `geraet=alle` und
 liefert dann alle Leuchten in einer Antwort, mit `G<Nr>_` vor jedem Feldnamen —
 damit reicht in Loxone **ein** virtueller Eingang statt einem je Gerät.
 Schaltend: `ein`, `aus`, `hell`, `kelvin`, `farbe`, `szene`, `balken`,
-`segment`, `musik`, `pt`, `abruf`, `suche`.
+`segment`, `musik`, `pt`, `abruf`, `suche`, seit 0.9.40 `loxfarbe`
+(`wert=0..201009999`, die Zahl eines Farbkreises einer Lichtsteuerung; eigener
+Haken, ab Werk aus; Abschnitt „Neu in 0.9.40“).
 
 Drei Angaben sind seit 0.9.9 dazugekommen, alle hinten angehängt, damit
 bestehende Suchmuster in Loxone gültig bleiben:

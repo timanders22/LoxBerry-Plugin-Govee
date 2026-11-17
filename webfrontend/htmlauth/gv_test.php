@@ -221,6 +221,16 @@ function gv_pruefungen()
     $zeilen[] = gv_pruefzeile(!empty($cfg['pt_frei']) ? -1 : 1, gv_t('TEST.F_PTFREI'),
         !empty($cfg['pt_frei']) ? gv_t('TEST.A_PTFREI_EIN') : gv_t('TEST.A_PTFREI_AUS'));
 
+    /* 0.9.40: Farbe aus einer Lichtsteuerung (loxfarbe). Erst der Haken, dann die Entschluesselung mit WIRKUNG: jede
+     * gemessene Zahl wird durch gv_loxfarbe_lesen() geschickt und Helligkeit, r/g/b bzw. Kelvin gegen die vorher
+     * gerechnete Erwartung gehalten; jeder Fehlfall muss mit der erwarteten Zahl von Beanstandungen abgewiesen werden. */
+    $zeilen[] = gv_pruefzeile(gv_loxfarbe_gesperrt($cfg) ? -1 : 1, gv_t('TEST.F_LOXFARBE_HAKEN'),
+        gv_loxfarbe_gesperrt($cfg) ? gv_t('TEST.A_LOXFARBE_HAKEN_AUS') : gv_t('TEST.A_LOXFARBE_HAKEN_EIN'));
+    list($gv_lfn, $gv_lff, $gv_lfl) = gv_loxfarbe_selbsttest();
+    $zeilen[] = gv_pruefzeile($gv_lfn > 0 && $gv_lff === 0 ? 1 : 0, gv_t('TEST.F_LOXFARBE'),
+        ($gv_lfn > 0 && $gv_lff === 0) ? sprintf(gv_t('TEST.A_LOXFARBE_OK'), $gv_lfn)
+            : sprintf(gv_t('TEST.A_LOXFARBE_FEHL'), $gv_lff, $gv_lfn, gv_e(implode('; ', $gv_lfl))));
+
     /* Traegt jedes Formular das Merkmal gegen fremde Absender - als
      * vollstaendiges Feld - und hat jedes Formular zum Hochladen sein
      * Dateifeld? Gelesen wird die eigene Datei (gv_pruefzeile_formulare()). */
@@ -883,9 +893,34 @@ function gv_trockenlauf()
     }
     $aktion = $hol('test_trocken');
     $erlaubt = array('ein', 'aus', 'hell', 'kelvin', 'farbe', 'szene', 'szenenr',
-                     'balken', 'segment', 'musik');
+                     'balken', 'segment', 'musik', 'loxfarbe');
     if (!in_array($aktion, $erlaubt, true)) {
         return array(0, gv_t('TEST.M_UNBEKANNT'));
+    }
+
+    /* 0.9.40: loxfarbe zeigt, wie die Zahl gelesen wird, und je Teilbefehl (hell, farbe bzw. kelvin) die Nachricht -
+     * mit denselben Funktionen wie Endpunkt und Bruecke (gv_loxfarbe_lesen(), gv_loxfarbe_auftraege(),
+     * gv_nachricht_bauen()). Gesendet wird nichts; der Haken loxfarbe_ein wird hier nicht verlangt. */
+    if ($aktion === 'loxfarbe') {
+        $l = gv_loxfarbe_lesen($hol('test_loxfarbe'));
+        list($auftraege, $fehler) = gv_loxfarbe_auftraege($l, (int) $g['nr'], gv_config());
+        if ($auftraege === null) {
+            return array(0, implode(' ', $fehler));
+        }
+        $zeilen = array(sprintf(gv_t('TEST.TROCKEN_LOXFARBE'), strtoupper($l['art']), (int) $l['hell'],
+            $l['art'] === 'rgb' ? sprintf('%02x%02x%02x', $l['r'], $l['g'], $l['b']) : '-',
+            $l['kelvin'] === null ? '-' : (string) $l['kelvin']), '');
+        foreach ($auftraege as $a) {
+            list($nachricht, $meldung) = gv_nachricht_bauen($a['aktion'], $g, $a);
+            if ($nachricht === null) {
+                return array(0, $meldung);
+            }
+            $zeilen[] = sprintf(gv_t('TEST.TROCKEN_KOPF'), $a['aktion'], $g['name'], $g['ip'], GV_PORT_BEFEHL);
+            $zeilen[] = $nachricht;
+            $zeilen[] = '';
+        }
+        $zeilen[] = gv_t('TEST.TROCKEN_FUSS');
+        return array(1, implode("\n", $zeilen));
     }
 
     /* Dieselben Felder wie die echten Knoepfe daneben. */

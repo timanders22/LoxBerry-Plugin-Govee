@@ -27,6 +27,11 @@
  *            [&bewegung=<Zahl>] [&geschw=0..100]
  *   musik    &art=<Zahl> [&sens=0..100] [&gruppe=15|12|1|19]
  *   pt       &cmd=<base64>[,<base64>...]      nur wenn ausdruecklich erlaubt
+ *   loxfarbe &wert=0..201009999   Zahl eines Farbkreises einer Lichtsteuerung (seit 0.9.40, eigener Haken
+ *            loxfarbe_ein, ab Werk aus): RGB B*1000000+G*1000+R in Prozent, Lumitech 200000000+Helligkeit*10000+
+ *            Kelvin, 0 = aus. Ausgefuehrt als hell + farbe bzw. hell + kelvin (gv_loxfarbe_annehmen() in gv_lib.php);
+ *            abgewiesen mit GRUND=LOXFARBE_AUS (403), LOXFARBE_WERT oder KELVIN_AUSSERHALB (400), je Beanstandung
+ *            eine Zeile.
  *
  * Seit 0.9.34 antwortet ein Wert ueber der Grenze mit HTTP 400 GRUND=WERT_AUSSERHALB (hell, balken, hgint, geschw, sens
  * ueber 100; nr, art ueber 255); bis 0.9.33 kappte ihn der Nachrichtenbau still (nr: spaete Absage des Dienstes, HTTP 500).
@@ -111,7 +116,7 @@ if ($gv_selbsttest) {
 /* ---------------- Aktion (Weissliste) ---------------- */
 $gv_lesend = array('status', 'liste', 'szenen', 'roh');
 $gv_schaltend = array('ein', 'aus', 'hell', 'kelvin', 'farbe', 'szene', 'balken',
-                      'segment', 'musik', 'pt', 'abruf', 'suche');
+                      'segment', 'musik', 'pt', 'abruf', 'suche', 'loxfarbe');
 /* 0.9.38: is_string() vor der Umwandlung - aktion[]=... ergab unter PHP 8 eine Warnung im Protokoll; ein Feld
  * ist wie eine unbekannte Aktion zu behandeln (400). */
 $gv_aktion = !isset($_GET['aktion']) ? 'status' : (is_string($_GET['aktion']) ? $_GET['aktion'] : '');
@@ -151,8 +156,9 @@ function gv_param($name, $muster, $vorgabe = '')
  * das Muster sie zu, und gv_geraet() machte daraus Leuchte 1. */
 $gv_nr       = gv_param('geraet',   '/^([1-9][0-9]?|alle)$/', '1');
 /* Acht Ziffern, nicht fuenf: eine Farbe als eine Zahl geht bis 16777215.
- * Die Bereiche prueft danach jede Aktion fuer sich. */
-$gv_wert     = gv_param('wert',     '/^[0-9]{1,8}$/', '');
+ * Die Bereiche prueft danach jede Aktion fuer sich. Neun nur fuer loxfarbe (0.9.40, bis 201009999); fuer jede
+ * andere Aktion bleibt das Muster, wie es war. */
+$gv_wert     = gv_param('wert',     $gv_aktion === 'loxfarbe' ? '/^[0-9]{1,9}$/' : '/^[0-9]{1,8}$/', '');
 $gv_hex      = gv_param('hex',      '/^[0-9a-fA-F]{6}$/', '');
 $gv_hg       = gv_param('hg',       '/^[0-9a-fA-F]{6}$/', '');
 $gv_hgint    = gv_param('hgint',    '/^[0-9]{1,3}$/', '');
@@ -281,6 +287,14 @@ if (gv_befehl_gesperrt($gv_aktion, $gv_cfg)) {
     echo "Schreibende Befehle sind gesperrt. Reiter Einstellungen, Haken 'Schreibende Befehle zulassen'.\n";
     exit;
 }
+/* 0.9.40: loxfarbe hat einen eigenen Haken, ab Werk aus - wie die Sperre oben VOR der Pruefung der Parameter.
+ * Dieselbe Frage stellt gv_loxfarbe_annehmen() fuer die Befehlsbruecke. */
+if ($gv_aktion === 'loxfarbe' && gv_loxfarbe_gesperrt($gv_cfg)) {
+    http_response_code(403);
+    echo "SET;OK=0;AKTION=loxfarbe;GRUND=LOXFARBE_AUS\n";
+    echo "Die Farbe aus einer Lichtsteuerung ist gesperrt. Reiter Einstellungen, Haken 'Farbe aus einer Lichtsteuerung annehmen'.\n";
+    exit;
+}
 $gv_befehl = array('aktion' => $gv_aktion,
                    'geraet' => ($gv_nr === 'alle') ? 'alle' : (int) $gv_nr);
 
@@ -383,6 +397,15 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
         exit;
     }
     $gv_befehl['cmd'] = explode(',', $gv_ptcmd);
+} elseif ($gv_aktion === 'loxfarbe') {
+    /* Die Zahl geht als Text weiter; gv_loxfarbe_lesen() prueft sie ganz (Kanaele, Helligkeit, Hoechstwert). */
+    if ($gv_wert === '') {
+        http_response_code(400);
+        echo "SET;OK=0;AKTION=loxfarbe;GRUND=WERT_FEHLT\n";
+        echo "Die Zahl der Lichtsteuerung wird als wert=<v> angegeben (0 bis " . GV_LOXFARBE_MAX . ").\n";
+        exit;
+    }
+    $gv_befehl['wert'] = $gv_wert;
 }
 
 /* Erst jetzt Dienst, Befehlsbremse und Warteschlange - seit 0.9.30 in gv_befehl_annehmen() (gv_lib.php), dieselbe
@@ -394,6 +417,15 @@ if (in_array($gv_aktion, array('hell', 'kelvin', 'balken'), true)) {
  *   - Befehlsbremse (X-7, Entscheidung 19): derselbe Sollwert an dieselbe Leuchte binnen 60 s geht nicht erneut hinaus
  *     (UNVERAENDERT=1), kein 429; laesst sich ihr Merker nicht oeffnen, faellt sie geschlossen aus (503). */
 $gv_r = gv_befehl_annehmen($gv_befehl, $gv_cfg, 'http');
+/* 0.9.40: Absagen von loxfarbe vor dem Senden - jede Beanstandung eine Zeile, nie der Rohwert. */
+if (in_array($gv_r['grund'], array('LOXFARBE_AUS', 'LOXFARBE_WERT', 'KELVIN_AUSSERHALB'), true)) {
+    http_response_code($gv_r['http']);
+    echo 'SET;OK=0;AKTION=' . $gv_aktion . ';GRUND=' . $gv_r['grund'] . "\n";
+    foreach ($gv_r['fehler'] ? $gv_r['fehler'] : array($gv_r['meldung']) as $gv_fz) {
+        echo str_replace(array("\r", "\n"), ' ', (string) $gv_fz) . "\n";
+    }
+    exit;
+}
 if ($gv_r['grund'] === 'DIENST_LAEUFT_NICHT') {
     http_response_code(503);
     echo "SET;OK=0;GRUND=DIENST_LAEUFT_NICHT\n";
@@ -413,5 +445,11 @@ if ($gv_r['unveraendert']) {
 if ($gv_r['http'] !== 200) {
     http_response_code($gv_r['http']);
 }
-printf("SET;OK=%d;AKTION=%s;MELDUNG=%s\n", $gv_r['ok'], $gv_aktion,
+/* 0.9.40: loxfarbe nennt vor MELDUNG, wie die Zahl gelesen wurde (ART, HELL in Prozent, HEX nach dem Strecken auf
+ * 0..255 oder -, KELVIN oder -1). Fuer jede andere Aktion bleibt die Zeile, wie sie war. */
+$gv_lf = ($gv_aktion === 'loxfarbe' && isset($gv_r['loxfarbe']) && is_array($gv_r['loxfarbe'])) ? $gv_r['loxfarbe'] : null;
+$gv_lfz = $gv_lf === null ? '' : sprintf(';ART=%s;HELL=%d;HEX=%s;KELVIN=%d', strtoupper($gv_lf['art']), $gv_lf['hell'],
+    $gv_lf['art'] === 'rgb' ? sprintf('%02x%02x%02x', $gv_lf['r'], $gv_lf['g'], $gv_lf['b']) : '-',
+    $gv_lf['kelvin'] === null ? -1 : $gv_lf['kelvin']);
+printf("SET;OK=%d;AKTION=%s%s;MELDUNG=%s\n", $gv_r['ok'], $gv_aktion, $gv_lfz,
     str_replace(array("\r", "\n", ';'), ' ', $gv_r['meldung']));

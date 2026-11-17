@@ -12,10 +12,10 @@
  * und gibt array(bool ok, string grund) zurueck (gv_befehl_ergebnis()).
  *
  * Themen je Leuchte <praefix>/befehl/geraet<N>/<name> oder .../alle/<name> (E8, wie die Werte govee/geraet<N>/...);
- * "alle" geht wie am Endpunkt an jede eingerichtete Leuchte. Neun Befehle schalten und stehen hinter dem zweiten Haken
+ * "alle" geht wie am Endpunkt an jede eingerichtete Leuchte. Zehn Befehle (seit 0.9.40; davor neun) schalten und stehen hinter dem zweiten Haken
  * "Schreibende Befehle zulassen" (steuerung_ein, E7); abruf braucht ihn nicht (wie am Endpunkt). musik, pt und suche gehen
  * nicht ueber MQTT (E10). Seit 0.9.34 als Text: szene_name, segment, balken_farbe (gv_mqtt_text_befehl(), nie retained;
- * balken bleibt gelb). Sperrzeiten (ENTSCHEIDUNGEN Gruppe 3, E9): Sollwerte und Balken 0 s, Szene 5 s,
+ * balken bleibt gelb). Seit 0.9.40 loxfarbe (Zahl eines Farbkreises der Lichtsteuerung, eigener Haken loxfarbe_ein). Sperrzeiten (ENTSCHEIDUNGEN Gruppe 3, E9): Sollwerte und Balken 0 s, Szene 5 s,
  * Abruf 10 s. Die Bruecke wartet je Befehl hoechstens die Wartezeit des Plugins (ab Werk 6 s) auf den Dienst.
  * Quittung "uebergeben" fuer alles Schaltende: UDP an die Leuchte quittiert nicht (E11).
  */
@@ -80,6 +80,11 @@ return array(
         '{geraet}/helligkeit' => $gv_wert('hell', 'wert', 'Govee Helligkeit (MQTT)', 'BEFEHL.K_HELLIGKEIT', 0, 100, 0, $gv_null),
         '{geraet}/kelvin' => $gv_wert('kelvin', 'wert', 'Govee Farbtemperatur (MQTT)', 'BEFEHL.K_KELVIN', 1000, 10000, 0, $gv_null),
         '{geraet}/farbe' => $gv_wert('farbe', 'wert', 'Govee Farbe als Zahl (MQTT)', 'BEFEHL.K_FARBE', 0, 16777215, 0, $gv_null),
+        /* 0.9.40: die Zahl eines Farbkreises einer Lichtsteuerung (RGB BBBGGGRRR in Prozent, Lumitech 20BBBKKKK, 0 = aus),
+         * entschluesselt in gv_loxfarbe_lesen(); 201009999 = GV_LOXFARBE_MAX (hier als Zahl, die Tabelle wird auch ohne
+         * Bibliothek gelesen). Dritter Haken loxfarbe_ein, ab Werk aus - geprueft in gv_befehl_annehmen(). */
+        '{geraet}/loxfarbe' => $gv_wert('loxfarbe', 'wert', 'Govee Farbe aus Lichtsteuerung (MQTT)', 'BEFEHL.K_LOXFARBE', 0,
+            201009999, 0, $gv_null),
         '{geraet}/szene' => $gv_wert('szene', 'nr', 'Govee Szene nach Kennung (MQTT)', 'BEFEHL.K_SZENE', 0, 255, 5,
             'Ereignis; schuetzt nur vor Doppelausloesung, dieselbe Szene darf kurz danach erneut gewaehlt werden'),
         '{geraet}/balken' => $gv_wert('balken', 'wert', 'Govee Balken in Prozent (MQTT)', 'BEFEHL.K_BALKEN', 0, 100, 0,

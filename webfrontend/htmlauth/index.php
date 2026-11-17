@@ -530,6 +530,7 @@ if ($gv_post && isset($_POST['speichern'])) {
     $gv_cfg['steuerung_ein'] = isset($_POST['steuerung_ein']) ? 1 : 0;
     $gv_cfg['pt_frei'] = isset($_POST['pt_frei']) ? 1 : 0;
     $gv_cfg['cloud_ein'] = isset($_POST['cloud_ein']) ? 1 : 0;
+    $gv_cfg['loxfarbe_ein'] = isset($_POST['loxfarbe_ein']) ? 1 : 0;     // 0.9.40, ab Werk aus
 
 
     /* Der Cloud-Schluessel steht in einer eigenen Datei mit Rechten 0600.
@@ -1255,6 +1256,11 @@ for ($gv_i = 0; $gv_i < 8; $gv_i++) {
   <?= gv_e(gv_t('EINST.L_PTFREI')) ?></label>
   <div class="sm-hilfe"><?= gv_t('EINST.H_PTFREI') ?></div>
 </div>
+<div class="sm-feld">
+  <label><input data-role="none" type="checkbox" name="loxfarbe_ein" value="1"<?= !empty($gv_cfg['loxfarbe_ein']) ? ' checked' : '' ?>>
+  <?= gv_e(gv_t('EINST.L_LOXFARBE')) ?></label>
+  <div class="sm-hilfe"><?= gv_t('EINST.H_LOXFARBE') ?></div>
+</div>
 
 <?php /* MQTT stand hier bis zu dieser Fassung. Es wohnt jetzt
          vollstaendig im Reiter MQTT - eine Sache, eine Stelle. */ ?>
@@ -1532,7 +1538,9 @@ $gv_eb_port = (int) $gv_mqtt['udpport'] > 0 ? (int) $gv_mqtt['udpport'] : 11884;
 <?php $gv_eb_g1 = 'geraet' . (int) $gv_eb_nrn[0];
 foreach ($gv_eb_bl['befehle'] as $gv_eb_b) {
     $gv_eb_th = str_replace('{geraet}', $gv_eb_g1, $gv_eb_b['thema']);
-    $gv_eb_lx = str_replace('{geraet}', $gv_eb_g1, $gv_eb_b['loxone']['ein'])
+    /* 0.9.40: loxfarbe mit <v> wie in der Vorlage (gv_loxfarbe_platzhalter()). */
+    $gv_eb_lx = str_replace(array('{geraet}', '<v.0>'), array($gv_eb_g1, gv_loxfarbe_platzhalter($gv_eb_b['name'], '<v.0>')),
+                            $gv_eb_b['loxone']['ein'])
               . ($gv_eb_b['loxone']['aus'] !== '' ? ' / ' . str_replace('{geraet}', $gv_eb_g1, $gv_eb_b['loxone']['aus']) : ''); ?>
 <tr><td><?= gv_e(gv_t($gv_eb_b['kachel'])) ?></td><td><?= gv_e($gv_eb_b['titel']) ?></td><td><?= $gv_eb_mono($gv_eb_th) ?></td><td><?= $gv_eb_mono($gv_eb_lx) ?></td><td><?= gv_e(gv_t($gv_eb_b['eingreifend'] ? 'ALLG.JA' : 'ALLG.NEIN')) ?></td><td><?= (int) $gv_eb_b['sperre_s'] ?> s</td><td><?= gv_e(gv_t($gv_eb_b['quittung'] === 'uebergeben' ? 'BEFEHL.QUITTUNG_UEBERGEBEN' : 'BEFEHL.QUITTUNG_AUSGEFUEHRT')) ?></td></tr>
 <?php } ?>
@@ -1555,6 +1563,30 @@ foreach ($gv_eb_bl['befehle'] as $gv_eb_b) {
 <?php } ?>
 <div class="sm-hilfe"><?= gv_e(gv_t('LOX.EB_S5_VORLAGE')) ?></div>
 <?php } ?>
+</div>
+
+<?php /* 0.9.40: Farbe aus einer Lichtsteuerung (loxfarbe). Der Farbkreis schickt ueber einen ANALOGEN virtuellen Ausgang
+   eine Zahl (gemessen 17.11.2026, Regeln/07); die Adressen hier sind vollstaendig, mit Token und Leuchtennummer, zum
+   Abschreiben. Platzhalter <v> wie gemessen (gv_loxfarbe_platzhalter()). */
+$gv_lf_nrn = $gv_geraete ? array_keys($gv_geraete) : array(1); ?>
+<div class="sm-step"><b>5a. <?= gv_e(gv_t('LOX.EB_LF_T')) ?></b><br>
+<?= gv_t('LOX.EB_LF') ?>
+<div class="<?= gv_loxfarbe_gesperrt($gv_cfg) ? 'sm-warnung' : 'sm-hinweis' ?>"><?= gv_e(sprintf(gv_t(gv_loxfarbe_gesperrt($gv_cfg) ? 'LOX.EB_LF_HAKEN_AUS' : 'LOX.EB_LF_HAKEN_EIN'), gv_t('EINST.L_LOXFARBE'), gv_t('EINST.L_STEUERUNG'), gv_t('REITER.EINSTELLUNGEN'), gv_t('MQTT.L_BEFEHLE'))) ?></div>
+<div class="sm-warnung"><?= gv_t('LOX.EB_LF_ANALOG') ?></div>
+<div class="sm-warnung"><?= gv_t('LOX.EB_LF_TYP') ?></div>
+<table class="sm-tbl">
+<tr><th style="width:22%;"><?= gv_e(gv_t('LOX.EB_LF_T_WEG')) ?></th><th><?= gv_e(gv_t('LOX.EB_LF_T_BEFEHL')) ?></th></tr>
+<?php foreach ($gv_lf_nrn as $gv_lf_nr) {
+    $gv_lf_name = isset($gv_geraete[$gv_lf_nr]) ? $gv_geraete[$gv_lf_nr]['name'] : gv_t('LOX.EB_OHNE_LEUCHTE'); ?>
+<tr><td><?= gv_e(sprintf(gv_t('LOX.EB_LF_MQTT'), (int) $gv_lf_nr, $gv_lf_name)) ?></td>
+    <td><?= $gv_eb_mono('publish ' . $gv_thema . '/befehl/geraet' . (int) $gv_lf_nr . '/loxfarbe ' . gv_loxfarbe_platzhalter('loxfarbe', '<v.0>')) ?></td></tr>
+<tr><td><?= gv_e(sprintf(gv_t('LOX.EB_LF_HTTP'), (int) $gv_lf_nr, $gv_lf_name)) ?></td>
+    <td><?= $gv_eb_mono($gv_basis . '?token=' . $gv_token . '&aktion=loxfarbe&geraet=' . (int) $gv_lf_nr . '&wert=' . gv_loxfarbe_platzhalter('loxfarbe', '<v.0>')) ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-hilfe"><?= sprintf(gv_t('LOX.EB_LF_FORM'), GV_LOXFARBE_MAX) ?></div>
+<div class="sm-hilfe"><?= gv_t('LOX.EB_LF_KELVIN') ?></div>
+<div class="sm-hilfe"><?= gv_e(sprintf(gv_t('LOX.EB_LF_WEGE'), (int) $gv_eb_port, gv_t('LOX.K_VQ_MQTT'), gv_t('LOX.K_VQ_LOX'))) ?></div>
 </div>
 
 <div class="sm-step"><b>6. <?= gv_e(gv_t('LOX.EB_S6_T')) ?></b><br>
@@ -1827,6 +1859,8 @@ if ($gv_geraete) {
     <td><span class="sm-mono">…&amp;aktion=kelvin&amp;geraet=1&amp;wert=2700</span></td></tr>
 <tr><td><span class="sm-mono">farbe</span></td>
     <td><span class="sm-mono">…&amp;aktion=farbe&amp;geraet=1&amp;hex=ff8800</span></td></tr>
+<tr><td><span class="sm-mono">loxfarbe</span></td>
+    <td><span class="sm-mono">…&amp;aktion=loxfarbe&amp;geraet=1&amp;wert=&lt;v&gt;</span> <?= gv_e(gv_t('LOX.EB_LF_BISHER')) ?></td></tr>
 <tr><td><span class="sm-mono">szene</span></td>
     <td><span class="sm-mono">…&amp;aktion=szene&amp;geraet=1&amp;name=h70c4_kerzenlicht</span></td></tr>
 <tr><td><span class="sm-mono">balken</span></td>
@@ -2128,10 +2162,15 @@ foreach ($gv_geraete as $gv_g) { if ($gv_g['pixel'] > 0) { $gv_vorschau_pixel = 
   <label for="test_trocken"><?= gv_e(gv_t('TEST.L_TROCKEN')) ?></label>
   <select data-role="none" id="test_trocken" name="test_trocken">
 <?php foreach (array('ein', 'aus', 'hell', 'kelvin', 'farbe', 'szene', 'szenenr',
-                     'balken', 'segment', 'musik') as $gv_ta) { ?>
+                     'balken', 'segment', 'musik', 'loxfarbe') as $gv_ta) { ?>
     <option value="<?= gv_e($gv_ta) ?>"><?= gv_e($gv_ta) ?></option>
 <?php } ?>
   </select>
+</div>
+<div class="sm-feld">
+  <label for="test_loxfarbe"><?= gv_e(gv_t('TEST.L_LOXFARBE')) ?></label>
+  <input data-role="none" type="text" id="test_loxfarbe" name="test_loxfarbe" value="9027045" inputmode="numeric" maxlength="9">
+  <div class="sm-hilfe"><?= gv_t('TEST.H_LOXFARBE') ?></div>
 </div>
 <div class="sm-knopfreihe">
   <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="trocken"><?= gv_e(gv_t('TEST.K_TROCKEN')) ?></button>
