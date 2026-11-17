@@ -3,9 +3,15 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.40 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.41 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.41
+
+- **Farbe aus einer Lichtsteuerung über HTTP nachgemessen (18.11.2026).** Über einen virtuellen HTTP-Ausgang kommt dieselbe ganze Zahl an wie über MQTT – ohne Nachkommastelle und ohne Exponent, auch neunstellig; `<v>` und `<v.0>` liefern dasselbe. Gemessen: Rot `100`, Weiß `100100100`, Blau `100000000`, Rot halb `50`, 2700 K `201002700`, 4000 K mit 50 % `200504000`, Aus `0`.
+- **Lumitech-Aus:** Nach einer Farbtemperatur schickt ein Lumitech-Kreis beim Ausschalten nicht `0`, sondern Helligkeit 0 mit Kelvin (etwa `200004000`). `loxfarbe` behandelt das schon seit 0.9.40 als Aus; Hilfe und Reiter „Einbindung in Loxone“ sagen es jetzt.
+- Nur Texte geändert (README, Hilfe, Einbindung); am Programm ändert sich nichts.
 
 ## Neu in 0.9.40
 
@@ -15,7 +21,7 @@ Fassung 0.9.40 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 - **Unverändert:** `farbe`, `kelvin`, `hell`, `ein`, `aus` und alle übrigen Befehle, Themen und Antworten. Die Vorlagen „Govee MQTT-Befehle“ und „Stufenlos über den LoxBerry“ enthalten den neuen Befehl „Farbe aus Lichtsteuerung“ (neu einlesen, wer ihn braucht). Der Reiter „Einbindung in Loxone“ zeigt in Schritt 5a die vollständigen Adressen; der Reiter Test prüft die Entschlüsselung an den gemessenen Werten.
 - **Loxone Config:** Beim Verbinden des Kreisausgangs mit dem virtuellen Ausgang stellt Config den Typ des Lichtkreises still auf „Schalter“ zurück (gemessen 17.11.2026). Den Typ nach dem Verbinden erneut einstellen.
 - **Knopf „Dokumentation“:** `plugin.cfg` trägt jetzt `WEBSITE=` mit der Adresse des Repositorys; LoxBerry zeigt den Knopf in der Plugin-Verwaltung nach der Installation dieser Fassung.
-- Geprüft auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am LoxBerry gemessen am 17.11.2026 an einer H60A6 über das Heimnetz: Rot, Grün, Blau, Weiß, Rot mit halber Helligkeit, 2700 K, 6500 K mit 50 % und Aus kamen an; `0` schaltet aus, und nach dem Aus kehrt die Leuchte in ihrer Farbe zurück. Nicht gemessen: H61A8, Leuchten über die Cloud und ein virtueller HTTP-Ausgang am Miniserver (dort `<v>` verwenden; ein Wert mit Nachkommastelle wie `100.0` wird abgewiesen).
+- Geprüft auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am LoxBerry gemessen am 17.11.2026 an einer H60A6 über das Heimnetz: Rot, Grün, Blau, Weiß, Rot mit halber Helligkeit, 2700 K, 6500 K mit 50 % und Aus kamen an; `0` schaltet aus, und nach dem Aus kehrt die Leuchte in ihrer Farbe zurück. Nicht gemessen: H61A8 und Leuchten über die Cloud. Den virtuellen HTTP-Ausgang am Miniserver hat 0.9.41 nachgemessen (siehe dort).
 - Die Fassung 0.9.39 wurde nicht veröffentlicht; sie trug nur die Nummer.
 
 ## Neu in 0.9.38
