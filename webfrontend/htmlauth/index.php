@@ -177,8 +177,8 @@ if ($gv_post && isset($_POST['sicherung_holen'])) {
      *
      * Damit traegt sie ein Geheimnis, und der Hinweis daneben sagt das:
      * wie ein Passwort behandeln, nicht in ein Forum haengen. */
-    /* Vorn ein lesbarer Kopf (_plugin, _stand, _hinweis), den das
-     * Zurueckspielen ueberliest (U12); gebaut in gv_sicherung_datei(). */
+    /* Kopf (_plugin, _fassung, _stand, _hinweis) und Inhalt baut seit 0.9.42 das gemeinsame Sicherungsmodul
+     * (gv_sicherung_datei() -> sicherung_bauen()). */
     $gv_js = gv_sicherung_datei();
     if ($gv_js === false) {
         $gv_fehler[] = gv_t('EINST.FEHLER_SICHERUNG');
@@ -194,45 +194,25 @@ if ($gv_post && isset($_POST['sicherung_holen'])) {
 
 /* ---------------- Einstellungen zurueckspielen ----------------
  *
- * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
- * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
- * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht erst
- * gelesen. */
+ * 0.9.42: das gemeinsame Sicherungsmodul (Auftrag des Hausherrn 12.11.2026, Umbau 18.11.2026). sicherung_eingang()
+ * prueft in jeder Linie gleich zuerst den Haken zurueck_ok (ohne ihn wird nichts gelesen und nichts geaendert), dann
+ * is_uploaded_file() (sonst liesse sich jede Datei des Servers unterschieben) und die Groessengrenze des Moduls.
+ * sicherung_zurueckspielen() liest und prueft (Kennzeichen, jeder Wert wie im Formular), verwirft Unbekanntes mit
+ * Namen, laesst einen leeren Wert den bisherigen stehen, aendert bei einer Beanstandung GAR NICHTS (alle
+ * Beanstandungen, nicht nur die erste), speichert govee.json und geheim.json samt Zweitschriften, misst sie nach und
+ * sagt, was mit dem Dienst geschah (gv_sicherung_beschreibung() in gv_lib.php). */
 if ($gv_post && isset($_POST['gv_zurueck'])) {
     $gv_tab = 'tab-settings';
-    if (!isset($_FILES['gv_sicherung']) || !is_array($_FILES['gv_sicherung'])
-        || !isset($_FILES['gv_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['gv_sicherung']['tmp_name'])) {
-        $gv_fehler[] = gv_t('EINST.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['gv_sicherung']['size'] > 262144) {
-        $gv_fehler[] = gv_t('EINST.SICH_ZU_GROSS');
+    list($gv_roh, $gv_ab) = sicherung_eingang(gv_sicherung_beschreibung(), $_POST, $_FILES, 'gv_sicherung');
+    if ($gv_ab !== null) {
+        $gv_sm = sicherung_meldungen(gv_sicherung_beschreibung(), $gv_ab);
+        foreach ($gv_sm['fehler'] as $gv_x) { $gv_fehler[] = $gv_x; }
     } else {
-        $gv_roh = (string) @file_get_contents($_FILES['gv_sicherung']['tmp_name']);
-        $gv_roh_daten = json_decode($gv_roh, true);
-        if (!is_array($gv_roh_daten)) { $gv_roh_daten = array(); }
-        list($gv_neu, $gv_mangel, $gv_n) = gv_sicherung_lesen($gv_roh);
-        if ($gv_neu === null) {
-            /* Eine halb gueltige Datei ueberschreibt NICHTS - und ALLE
-             * Beanstandungen werden genannt, nicht nur die erste. */
-            $gv_fehler[] = gv_t('EINST.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $gv_mangel);
-        } elseif (gv_config_speichern($gv_neu)) {
-            /* Der Cloud-Schluessel liegt in einer EIGENEN Datei mit 0600 -
-             * gv_config_speichern() fasst sie nicht an. Er wird deshalb
-             * hier gesondert zurueckgelegt, sonst kaeme die Sicherung
-             * vollstaendig herein und der Schluessel bliebe draussen. */
-            if (isset($gv_roh_daten['cloud_key'])) {
-                $gv_g = gv_geheim();
-                $gv_g['cloud_key'] = (string) $gv_roh_daten['cloud_key'];
-                /* Rueckgabewert pruefen und melden (U11). */
-                if (!gv_geheim_speichern($gv_g)) {
-                    $gv_fehler[] = sprintf(gv_t('EINST.FEHLER_SPEICHERN'), $gv_p['geheim']);
-                }
-            }
-            $gv_meldungen[] = sprintf(gv_t('EINST.SICH_UEBERNOMMEN'), $gv_n);
-        } else {
-            $gv_fehler[] = gv_t('EINST.SICH_SCHREIBFEHLER');
-        }
+        $gv_b = gv_sicherung_beschreibung();
+        $gv_r = sicherung_zurueckspielen($gv_b, $gv_roh);
+        $gv_sm = sicherung_meldungen($gv_b, $gv_r);
+        foreach ($gv_sm['fehler'] as $gv_x) { $gv_fehler[] = $gv_x; }
+        foreach ($gv_sm['hinweise'] as $gv_x) { $gv_meldungen[] = $gv_x; }
     }
 }
 
@@ -1342,6 +1322,7 @@ if ($gv_x3) { ?>
     <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= gv_e($gv_fmt) ?>">
     <input data-role="none" type="file" name="gv_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(gv_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gv_zurueck" value="1"><?= gv_e(gv_t('EINST.K_ZURUECK')) ?></button>
   </form>
 </div>

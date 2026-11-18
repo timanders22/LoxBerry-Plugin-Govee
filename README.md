@@ -3,9 +3,26 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.41 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.42 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.42
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen über das gemeinsame Sicherungsmodul 1.2.11,** wie in den übrigen Plugins dieser Reihe:
+  - „Einstellungen zurückspielen“ wirkt nur mit gesetztem Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“. Ohne Haken wird die Datei nicht gelesen und nichts geändert.
+  - Die Sicherung trägt im Kopf das Kennzeichen `LoxBerry-Plugin-Govee` und die Fassung. Sicherungen aus 0.9.22 bis 0.9.41 (Kennzeichen „Govee (Ordner)“) werden weiter angenommen, auch aus einer Anlage mit anderem Plugin-Ordner. Die Sicherung eines anderen Plugins wird als Ganzes abgewiesen.
+  - Sicherungen ganz ohne Kopf, wie sie 0.9.10 bis 0.9.21 schrieben, werden abgewiesen, weil sie sich von einer fremden Datei nicht sicher unterscheiden lassen. Bis 0.9.41 wurden sie gelesen.
+  - Eine Einstellung, die diese Fassung nicht kennt – oben, in einem Block oder in einem Gerät oder einer Szene –, wird verworfen und mit ihrem Namen genannt; der Rest der Datei wird zurückgespielt. Bis 0.9.41 wies sie die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen gespeicherten; der bisherige bleibt und wird genannt. Das gilt auch für den Cloud-Schlüssel: Bis 0.9.41 löschte eine Sicherung mit leerem `cloud_key` den hinterlegten Schlüssel. Diese Regel wendet seit Modul 1.2.11 das Sicherungsmodul selbst an, und `cloud_key` steht in der Meldung im selben Satz wie die übrigen leer gebliebenen Namen.
+  - Fehlen in einer älteren Sicherung die Haken „Befehle über MQTT annehmen“ (vor 0.9.30) oder „Farbe aus einer Lichtsteuerung annehmen“ (vor 0.9.40), behalten sie ihren geltenden Wert, und die Meldung nennt sie. Bis 0.9.41 gingen sie auf die Werkseinstellung (aus).
+  - Einträge der geltenden Einstellungen, die diese Fassung nicht kennt (etwa aus einer Bearbeitung von Hand), fallen beim Zurückspielen weg und werden mit ihrem Namen genannt, nie mit ihrem Wert.
+  - Eine Sicherungsdatei mit unsichtbarer Markierung am Anfang (UTF-8-BOM) wird gelesen wie ohne sie.
+  - Nach dem Zurückspielen sagt die Meldung, was mit dem Dienst geschah: Er wird nicht neu gestartet und liest die Einstellungen in seiner nächsten Runde; Abo-Datei des MQTT-Gateways und Befehlsbrücke folgen sofort, wie beim Speichern im Reiter MQTT. Bis 0.9.41 geschah nach dem Zurückspielen davon nichts.
+  - Wie bisher: Jeder Wert wird wie im Formular geprüft, eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Sprechtoken stehen nie in der Sicherung.
+- **Zweitschrift des Cloud-Schlüssels:** `geheim.json` zieht ihre Zweitschrift `<ordner>.backup.geheim.json` neben dem Konfigurationsordner jetzt bei jedem Speichern mit. Bis 0.9.41 entstand sie nur beim Update.
+- Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt: die Sicherungen aller 20 Vorfassungen 0.9.22 bis 0.9.41 werden angenommen. Am Gerät nicht gemessen.
+- **Sicherungsmodul 1.2.11:** Wandelt ein Plugin beim Zurückspielen eine Sicherung aus einer Textdatei um, sagt die Meldung das jetzt mit einem gemeinsamen Satz, und Mängel darin werden in allen Plugins mit denselben Bezeichnungen genannt. Dieses Plugin wandelt keine Textdateien um; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am Gerät nicht gemessen.
 
 ## Neu in 0.9.41
 

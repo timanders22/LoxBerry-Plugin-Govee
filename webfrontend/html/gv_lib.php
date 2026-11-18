@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/sicherung.php';         // 0.9.42: gemeinsames Sicherungsmodul (Abschrift der Stammfassung)
 /**
  * Govee - gemeinsame Bibliothek
  *
@@ -245,6 +246,9 @@ function gv_paths()
             'configdir' => $home . '/config/plugins/' . $dir,
             'config'    => $home . '/config/plugins/' . $dir . '/govee.json',
             'geheim'    => $home . '/config/plugins/' . $dir . '/geheim.json',
+            /* 0.9.42: Zweitschrift des Cloud-Schluessels neben dem Konfigordner - derselbe Name, unter dem
+             * preupgrade.sh sie seit 0.9.9 ablegt und postinstall.sh sie wiederfindet. */
+            'geheim_sicherung' => $home . '/config/plugins/' . $dir . '.backup.geheim.json',
             'sicherung' => $home . '/config/plugins/' . $dir . '.backup.json',
             'datadir'   => $home . '/data/plugins/' . $dir,
             'bindir'    => $home . '/bin/plugins/' . $dir,
@@ -262,6 +266,7 @@ function gv_paths()
             'configdir' => $basis . '/config',
             'config'    => $basis . '/config/govee.json',
             'geheim'    => $basis . '/config/geheim.json',
+            'geheim_sicherung' => $basis . '/config/geheim.backup.json',
             'sicherung' => $basis . '/config/govee.backup.json',
             'datadir'   => $basis . '/data',
             'bindir'    => $basis . '/bin',
@@ -603,9 +608,23 @@ function gv_geheim()
     return array_merge(array('cloud_key' => ''), gv_json_lesen(gv_paths()['geheim']));
 }
 
+/* 0.9.42: Wer geheim.json schreibt, zieht die Zweitschrift neben dem Konfigordner mit (Regeln/05, Zweitschrift und
+ * Selbstheilung; Mindeststandard Welle 1 Nr. 4). Bis 0.9.41 entstand sie nur in preupgrade.sh: ein Schluessel, der
+ * nach dem letzten Update eingetragen oder geloescht wurde, stand bis zum naechsten Update anders in der Zweitschrift.
+ * Erst die Datei, dann die Zweitschrift, beide 0600 am Anlegen und zurueckgelesen (gv_json_schreiben()).
+ * Misslingt nur die Zweitschrift, ist der Schluessel gespeichert; das Protokoll sagt es, und das Zurueckspielen
+ * einer Sicherung meldet es (Paar geheim.json im Rueckruf 'zweitschrift'). */
 function gv_geheim_speichern($g)
 {
-    return gv_json_schreiben(gv_paths()['geheim'], $g, 0600);
+    $p = gv_paths();
+    if (!gv_json_schreiben($p['geheim'], $g, 0600)) {
+        return false;
+    }
+    if (!gv_json_schreiben($p['geheim_sicherung'], $g, 0600)) {
+        gv_log_gebremst('zweitschrift_geheim', 'Die Zweitschrift ' . $p['geheim_sicherung']
+            . ' liess sich nicht schreiben; der Cloud-Schluessel selbst ist gespeichert.');
+    }
+    return true;
 }
 
 /**
@@ -3770,10 +3789,10 @@ function gv_warteschlange_ordner()
 }
 
 /**
- * Die Einstellungsschluessel, die erst nach einer Fassung dazukamen: fehlen sie in einer Sicherung, gilt ihre Vorgabe
- * (Haken der Befehlsbruecke ab Werk aus) - sonst wiese das Zurueckspielen jede Sicherung bis 0.9.29 als unvollstaendig
- * ab (Bauart mo_spaet_schluessel(), Robonect 1.1.24). loxfarbe_ein seit 0.9.40 (ab Werk aus), sonst wiese das
- * Zurueckspielen jede Sicherung bis 0.9.39 ab.
+ * Die Einstellungsschluessel, die erst nach einer Fassung dazukamen (befehle_mqtt_ein seit 0.9.30, loxfarbe_ein seit
+ * 0.9.40): fehlen sie in einer Sicherung, behalten sie seit 0.9.42 ihren geltenden Wert, und die Meldung nennt sie
+ * ('fehlt' => 'behalten' in gv_sicherung_beschreibung(); Regel 6 des Sicherungsmoduls, Entscheidung des Hausherrn
+ * 12.11.2026 "Ja, behalten"). Bis 0.9.41 galt ihre Vorgabe (ab Werk aus).
  */
 function gv_spaet_schluessel()
 {
@@ -4830,21 +4849,6 @@ function gv_t($schluessel)
 }
 
 
-/**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
- *
- * Die sieben Punkte aus REGELN_2, und der wichtigste davon ist der dritte:
- * eine halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte.
- *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin, und beides
- * gehoert gesagt.
- *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], Zahl uebernommener
- * Werte).
- */
 /** Die Schluessel der Sprachansagen in der Hauptkonfiguration. */
 function gv_ansage_schluessel()
 {
@@ -4881,59 +4885,12 @@ function gv_ansage_wert($k, $w)
     return false;
 }
 
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function gv_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
 /** 0.9.34: Der Satz zu einer Kennung des Stamms, mit dem Feldnamen davor; ohne Kennung (kein Block): die Erwartung. */
 function gv_ansage_grund($k, $kennung)
 {
     $t = (string) $kennung !== '' ? ansage_kennung_text($kennung, gv_ansage_k()) : gv_t('EINST.SICH_W_OBJEKT');
     /* Eine Kennung UNTER|tts.port|... nennt das Feld schon. */
     return strpos($t, (string) $k . '.') === 0 ? $t : (string) $k . ': ' . $t;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- * $gruende (0.9.34): der Grund je abgewiesenem Schluessel; der Wert 'ABGEWIESEN' traegt ihn nicht.
- */
-function gv_ansage_sicherung_vor($roh, &$gruende = null)
-{
-    $gruende = array();
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = gv_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, gv_ansage_modi()) : null;
-        $gv_tm = ansage_sicherung_mangel($d['tts']);
-        if ($gv_tm || $p === null) {
-            /* Nur die Namen der Felder, nie ein Wert. */
-            $gruende['tts'] = $gv_tm ? sprintf(gv_t('EINST.SICH_TTS_TOKEN'), implode(', ', $gv_tm)) : gv_ansage_grund('tts', $g);
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = gv_tts($j);
-    }
-    foreach (array_diff(gv_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
 }
 
 /**
@@ -5322,100 +5279,216 @@ function gv_ansage_flanke($anlass, $gestoert, $name = '', $frist = 0, $jetzt = n
     return gv_ansage_legen(array($ein));
 }
 
-function gv_sicherung_lesen($roh, &$namen = null)
+/**
+ * 0.9.42: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026, Umbau 18.11.2026: "Ja, umbauen"). Bis 0.9.41 stand hier eine eigene Lesefunktion
+ * (gv_sicherung_lesen()): ein unbekannter Schluessel oben oder ein unbekanntes Feld in einem Geraet oder einer Szene
+ * wies die ganze Datei ab, eine Datei ohne jeden Kopf wurde gelesen wie eine eigene, und es gab keinen Haken.
+ *
+ * Kennzeichen: 0.9.22 bis 0.9.41 schrieben _plugin = "Govee (<Ordner>)" (gemessen 18.11.2026 an den Archiven 0.9.10
+ * bis 0.9.41: 0.9.10 bis 0.9.21 ohne jeden Kopf). Das traegt Leerzeichen und Klammern und ist keine Namensform, die das
+ * Modul als Kennzeichen annimmt; es haengt zudem am Ordner der Anlage. Neu ist der Name des Repositorys,
+ * LoxBerry-Plugin-Govee; die bisherige Form gilt ueber ein Muster weiter als eigene Sicherung (Bauart Audioserver-NG).
+ * Eine Sicherung ganz ohne Kopf (0.9.10 bis 0.9.21) wird abgewiesen (Regel 1 des Moduls, Entscheidung des Hausherrn
+ * 12.11.2026 "Ja, abweisen"); bis 0.9.41 wurde sie gelesen.
+ *
+ * Inhalt: alle Schluessel von gv_vorgaben() samt Aktionstoken, dazu der Cloud-Schluessel als Teil "cloud_key" - oben,
+ * flach, wie seit 0.9.22; er geht nicht in govee.json, sondern in geheim.json (0600, gv_cloud_schluessel_teil()).
+ * Nie darin: die Sprechtoken im Block tts ('sichern' => ansage_sicherung_bereinigen) und die Vermerke
+ * ansage_token_herkunft und ansage_aus_datei ('nie_aus_datei'); der Formulartoken steht nicht in der Konfiguration.
+ * Fehlen darf, was aeltere Fassungen mit Kopf nicht kannten: befehle_mqtt_ein (seit 0.9.30), loxfarbe_ein (seit
+ * 0.9.40), tts, ansage_regeln und ansage_haken (seit 0.9.32) - dann bleibt der geltende Wert und wird genannt (Regel 6,
+ * Entscheidung des Hausherrn 12.11.2026 "Ja, behalten"; bis 0.9.41 gingen die beiden Haken auf die Werkseinstellung).
+ * Geraete und Szenen sind Listen ohne Zuordnungsschluessel: ein leeres Feld in einem Eintrag bleibt leer (Regel 3 greift
+ * dort nicht). Jeder Wert geht durch gv_sicherung_wert_pruefen() bzw. gv_ansage_wert(), wie bisher.
+ */
+function gv_sicherung_beschreibung()
 {
-    $roh = gv_ansage_sicherung_vor($roh, $gv_agr);     // Token und Vermerk bleiben die geltenden
-    /* X-3: $namen sammelt die Namen der beanstandeten Schluessel (nie Werte).
-     * So prueft gv_rueckspiel_befund() die eigene Sicherung mit DIESER
-     * Funktion - eine zweite Pruefliste waere eine zweite Wahrheit. */
-    $namen = array();
-    $mangel = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten) || ($daten && gv_ist_liste($daten))) {
-        return array(null, array(gv_t('EINST.SICH_KEIN_JSON')), 0);
+    $p = gv_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $tts_knoten = in_array('ziele', $tts, true)
+        ? array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))) : array();
+    $schluessel = array(
+        'geraete' => sicherung_liste(array('name', 'art', 'ip', 'sku', 'device', 'pt', 'nr', 'pixel', 'kmin', 'kmax')),
+        'szenen'  => sicherung_liste(array('schluessel', 'name', 'sku', 'cmd')),
+        'tts' => sicherung_block($tts, $tts_knoten) + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen'),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
+        'ansage_haken' => sicherung_block(array('geraet', 'konto')) + array('fehlt' => 'behalten'),
+    );
+    foreach (gv_spaet_schluessel() as $s) {
+        $schluessel[$s] = array('fehlt' => 'behalten');
     }
-    $neu = gv_vorgaben();
-    /* Der Cloud-Schluessel steht nicht in den Vorgaben - er liegt in einer
-     * eigenen Datei. Fuer die Sicherung ist er trotzdem ein BEKANNTER
-     * Schluessel, sonst meldete das Zurueckspielen ihn als fremd und
-     * lehnte die ganze Datei ab. */
-    $bekannt = array_merge(array_keys($neu), array_keys(gv_geheim()));
-    $anzahl = 0;
-    $gesehen = 0;
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        /* Der lesbare Kopf (_plugin, _stand, _hinweis) wird ueberlesen, nicht
-         * als fremd beanstandet (U12). */
-        if (substr($k, 0, 1) === '_') {
-            continue;
-        }
-        $gv_aw = gv_ansage_wert($k, $w);     // Sprachansagen: eigene Pruefung; Token und Vermerk bleiben die geltenden
-        if ($gv_aw !== null) {
-            if ($gv_aw) {
-                $neu[$k] = $w;
-                $gesehen++;
-            } else {
-                /* 0.9.34: der konkrete Grund statt pauschal "liessen sich nicht speichern". */
-                if (isset($gv_agr[$k])) {
-                    $mangel[] = $gv_agr[$k];
-                } elseif ($k === 'ansage_regeln') {
-                    $gv_ag = '';
-                    if (is_array($w)) { ansage_regeln_wert($w, $gv_ag); }
-                    $mangel[] = gv_ansage_grund($k, $gv_ag);
-                } else {
-                    $mangel[] = $k . ': ' . gv_t('ANSAGEPLUGIN.M_FEHL');
-                }
-                $namen[] = (string) $k;
-            }
-            continue;
-        }
-        /* Unmaskiert: die Anzeige maskiert selbst. Bis 0.9.22 stand hier
-         * gv_e(), und ein & erschien doppelt maskiert (U6). */
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(gv_t('EINST.SICH_FREMD'), $k);
-            $namen[] = $k;
-            continue;
-        }
-        $gesehen++;
-        /* Jeder Wert nach denselben Regeln wie das Formular (U4, Bauart E).
-         * Bis 0.9.22 wurde jeder Wert ungeprueft uebernommen: ein Token als
-         * Liste wurde zum Wort "Array", ein leeres Token wurde still neu
-         * gewuerfelt, geraete="kaputt" nahm alle Geraete weg
-         * (govee_agenten/oberflaeche, Befund 4). */
-        $wm = gv_sicherung_wert_pruefen($k, $w);
-        if ($wm) {
-            $mangel = array_merge($mangel, $wm);
-            $namen[] = $k;
-            continue;
-        }
-        if (array_key_exists($k, $neu)) {
-            $neu[$k] = $w;
-        }
-        $anzahl++;
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Govee',
+        'kennzeichen_frueher_muster' => '/^Govee \([A-Za-z0-9_.\-]{1,64}\)\z/',
+        'hinweis' => gv_klartext('EINST.SICH_KOPF_HINWEIS'),
+        'fassung' => 'gv_fassung',
+        'vorgaben' => gv_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'teile' => array('cloud_key' => 'gv_cloud_schluessel_teil'),
+        /* Modul 1.2.10, Regel 20: der geltende Stand des Teils cloud_key - ein leerer Wert in der Datei laesst den
+         * hinterlegten Schluessel stehen, und das Modul nennt ihn wie jeden leer behaltenen Namen. */
+        'teile_jetzt' => array('cloud_key' => 'gv_cloud_schluessel_jetzt'),
+        'pruefen' => 'gv_sicherung_pruefen',
+        'vorbehandeln' => 'gv_sicherung_vorbehandeln',
+        'jetzt' => function () { return gv_config(); },
+        'vorbereiten' => function ($neu) {
+            /* Wie bis 0.9.41: nach dem Zurueckspielen gilt eine alte ansage.json als uebernommen (gv_ansage_cfg()).
+             * Die Herkunft der Sprechtoken behaelt das Modul selbst ('nie_aus_datei', Modul 1.2.1). */
+            $neu['ansage_aus_datei'] = 1;
+            return $neu;
+        },
+        'speichern' => 'gv_sicherung_speichern',
+        'zweitschrift' => function () {
+            $q = gv_paths();
+            return array(array($q['config'], $q['sicherung']), array($q['geheim'], $q['geheim_sicherung']));
+        },
+        'nachziehen' => 'gv_sicherung_nachziehen',
+        'log' => 'gv_log',
+        't' => 'gv_t',
+        // Die Seite maskiert jede Meldung bei der Ausgabe (gv_e); hier nicht ein zweites Mal.
+        'e' => function ($s) { return (string) $s; },
+        'home' => $p['home'],
+        'ordner' => $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+    );
+}
+
+/**
+ * 0.9.42: Der Teil "cloud_key" einer Sicherung (oben, flach, wie seit 0.9.22). Er geht nicht in die Konfiguration,
+ * sondern in geheim.json (gv_sicherung_speichern()). Rueckgabe fuer das Modul: array(Wert|null, Beanstandungen[],
+ * Hinweise[]); null heisst "geheim.json bleibt, wie sie ist".
+ * Ein leerer Wert ueberschreibt keinen hinterlegten Schluessel und wird genannt (Regel 3). Das erledigt seit dem
+ * Umbau auf Modul 1.2.10 das Modul selbst (Regel 20, Stand aus gv_cloud_schluessel_jetzt()): dann wird diese Funktion
+ * gar nicht gerufen. Bis dahin bildete sie die Regel hier nach (Frage 5 der Nacht 18.11.2026, Entscheidung des
+ * Hausherrn 18.11.2026 "Ich folge deinen Empfehlungen"). Beidseits leer: keine Meldung. Bis 0.9.41 loeschte eine
+ * Sicherung mit leerem cloud_key den hinterlegten Schluessel still.
+ */
+function gv_cloud_schluessel_teil($w)
+{
+    $m = gv_sicherung_wert_pruefen('cloud_key', $w);
+    if ($m) {
+        return array(null, $m);
     }
-    if ($gesehen === 0) {
-        $mangel[] = gv_t('EINST.SICH_LEER');
+    return array($w, array());
+}
+
+/**
+ * 0.9.42: Der geltende Stand des Teils "cloud_key" fuer das Modul ('teile_jetzt', Regel 20 des Moduls 1.2.10). Ein
+ * Schluessel, der nach trim() leer ist, gilt als leer - wie in der Teilfunktion vor dem Umbau; sonst der Wert, wie er
+ * in geheim.json steht (gv_sicherung_speichern() schreibt nur einen Text zurueck).
+ */
+function gv_cloud_schluessel_jetzt()
+{
+    $g = gv_geheim();
+    $k = isset($g['cloud_key']) ? $g['cloud_key'] : '';
+    return (is_scalar($k) && trim((string) $k) !== '') ? $k : '';
+}
+
+/** 0.9.42: Der Grund, aus dem der Block tts beim Zurueckspielen abgewiesen wurde (gv_sicherung_vorbehandeln()). */
+function gv_sicherung_tts_grund($setzen = null)
+{
+    static $g = '';
+    if ($setzen !== null) {
+        $g = (string) $setzen;
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Eine Datei mit einem einzigen Schluessel lief bis 0.9.x ohne
-     * Beanstandung durch, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck (gemessen an VolkswagenID 0.9.11 am 03.09.2026, am 07.09.2026
-     * ueber den Bestand ausgerollt). Verglichen wird gegen die VORGABEN:
-     * was ausserhalb der Konfigurationsdatei liegt - der Cloud-Schluessel -
-     * darf fehlen. */
-    $fehlend = array();
-    foreach (array_keys(gv_vorgaben()) as $fk) {
-        /* gv_spaet_schluessel(): erst ab 0.9.30 - fehlt er in einer aelteren Sicherung, gilt die Vorgabe. */
-        if (!array_key_exists($fk, $daten) && !in_array($fk, gv_spaet_schluessel(), true)) {
-            $fehlend[] = $fk;
+    return $g;
+}
+
+/**
+ * 0.9.42: Der Block tts vor der Pruefung - was bis 0.9.41 gv_ansage_sicherung_vor() an der rohen Datei tat, jetzt nach
+ * dem Verwerfen unbekannter Unterschluessel: ein Block mit Sprechtoken oder mit einem unzulaessigen Wert wird
+ * unbrauchbar gemacht (gv_sicherung_pruefen() nennt den Grund), sonst vervollstaendigt, und die geltenden Sprechtoken
+ * bleiben. Fehlt der Block, behaelt das Modul den geltenden ('fehlt' => 'behalten').
+ */
+function gv_sicherung_vorbehandeln($bereit)
+{
+    gv_sicherung_tts_grund('');
+    if (!array_key_exists('tts', $bereit)) {
+        return $bereit;
+    }
+    $j = gv_ansage_cfg();
+    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
+    $g = '';
+    $pr = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, gv_ansage_modi()) : null;
+    $tm = ansage_sicherung_mangel($bereit['tts']);
+    if ($tm || $pr === null) {
+        /* Nur die Namen der Felder, nie ein Wert. */
+        gv_sicherung_tts_grund($tm ? sprintf(gv_t('EINST.SICH_TTS_TOKEN'), implode(', ', $tm)) : gv_ansage_grund('tts', $g));
+        $bereit['tts'] = 'ABGEWIESEN';
+    } else {
+        list($tv) = ansage_vervollstaendigen($pr, 'aus');
+        $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
+    }
+    return $bereit;
+}
+
+/** 0.9.42: Jeder Wert nach denselben Regeln wie bis 0.9.41 (Formular, Sprachansagen). Rueckgabe '' | Text | Liste. */
+function gv_sicherung_pruefen($k, $w)
+{
+    $k = (string) $k;
+    if ($k === 'tts' && $w === 'ABGEWIESEN') {
+        $g = gv_sicherung_tts_grund();
+        return $g !== '' ? $g : gv_ansage_grund('tts', '');
+    }
+    $aw = gv_ansage_wert($k, $w);
+    if ($aw !== null) {
+        if ($aw) {
+            return '';
         }
+        if ($k === 'ansage_regeln') {
+            $g = '';
+            if (is_array($w)) { ansage_regeln_wert($w, $g); }
+            return gv_ansage_grund($k, $g);
+        }
+        return $k . ': ' . gv_t('ANSAGEPLUGIN.M_FEHL');
     }
-    if ($fehlend) {
-        $mangel[] = sprintf(gv_t('EINST.SICH_FEHLEND'), count($fehlend), implode(', ', $fehlend));
-        $namen = array_merge($namen, $fehlend);
+    return gv_sicherung_wert_pruefen($k, $w);
+}
+
+/**
+ * 0.9.42: Speichern nach dem Zurueckspielen - wie bis 0.9.41 erst der Cloud-Schluessel, dann die Konfiguration; scheitert
+ * die Konfiguration, wird der bisherige Schluessel zurueckgeschrieben ("nichts gespeichert" soll dann stimmen). Beide
+ * Dateien ziehen ihre Zweitschrift mit (gv_geheim_speichern(), gv_config_speichern()); geheim.json wird auch dann
+ * geschrieben, wenn die Sicherung keinen Schluessel traegt, damit beide Paare danach inhaltsgleich sind.
+ */
+function gv_sicherung_speichern($neu, $jetzt, $r)
+{
+    $alt = gv_geheim();
+    $g = $alt;
+    if (isset($r['teile']['cloud_key']) && is_string($r['teile']['cloud_key'])) {
+        $g['cloud_key'] = $r['teile']['cloud_key'];
     }
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    if (!gv_geheim_speichern($g)) {
+        return false;
+    }
+    if (!gv_config_speichern($neu)) {
+        gv_geheim_speichern($alt);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * 0.9.42: Den Dienst nachziehen und sagen, was mit ihm geschah (Regeln/05). Der Dienst liest die Konfiguration in jeder
+ * Runde neu (bin/govee_dienst.php, Hauptschleife) und wird nicht neu gestartet. Abo-Datei und Befehlsbruecke folgen
+ * sofort, wie beim Speichern im Reiter MQTT. Bis 0.9.41 geschah nach dem Zurueckspielen nichts davon.
+ */
+function gv_sicherung_nachziehen($neu)
+{
+    $h = array(gv_t('EINST.SICH_DIENST'));
+    list($ap, $ad) = gv_abo_datei(true);
+    if (!$ad) {
+        $h[] = sprintf(gv_t('MQTT.M_ABO_DATEI_FEHL'), $ap);
+    }
+    list($brc, $bwas, $baus) = gv_bruecke_schalten($neu);
+    if ($bwas === 'start') {
+        $h[] = $brc === 0 ? gv_t('BEFEHL.M_EIN') : sprintf(gv_t('BEFEHL.M_START_FEHL'), $baus);
+    } elseif ($bwas === 'stop') {
+        $h[] = $brc === 0 ? gv_t('BEFEHL.M_AUS') : sprintf(gv_t('BEFEHL.M_STOP_FEHL'), $baus);
+    }
+    return $h;
 }
 
 /**
@@ -5563,18 +5636,11 @@ function gv_sicherung_geraete_pruefen($w)
     $m = array();
     $namen = array();
     $nummern = array();
-    $felder = array('name', 'art', 'ip', 'sku', 'device', 'pt', 'nr', 'pixel', 'kmin', 'kmax');
     foreach ($w as $i => $z) {
         $zeile = $i + 1;
         if (!is_array($z) || ($z && gv_ist_liste($z))) {
             $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile, gv_t('EINST.SICH_W_OBJEKT'));
             continue;
-        }
-        foreach (array_keys($z) as $f) {
-            if (!in_array((string) $f, $felder, true)) {
-                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'geraete', $zeile,
-                    sprintf(gv_t('EINST.SICH_W_FELD_FREMD'), $f));
-            }
         }
         foreach (array('name', 'art') as $f) {
             if (!array_key_exists($f, $z)) {
@@ -5656,18 +5722,11 @@ function gv_sicherung_szenen_pruefen($w)
     }
     $m = array();
     $belegt = array();
-    $felder = array('schluessel', 'name', 'sku', 'cmd');
     foreach ($w as $i => $s) {
         $zeile = $i + 1;
         if (!is_array($s) || ($s && gv_ist_liste($s))) {
             $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'szenen', $zeile, gv_t('EINST.SICH_W_OBJEKT'));
             continue;
-        }
-        foreach (array_keys($s) as $f) {
-            if (!in_array((string) $f, $felder, true)) {
-                $m[] = sprintf(gv_t('EINST.SICH_W_EINTRAG'), 'szenen', $zeile,
-                    sprintf(gv_t('EINST.SICH_W_FELD_FREMD'), $f));
-            }
         }
         foreach (array('schluessel', 'name', 'cmd') as $f) {
             if (!array_key_exists($f, $s)) {
@@ -5740,53 +5799,33 @@ function gv_szene_titel_belegt($name, $sku)
 }
 
 /**
- * Die Sicherungsdatei (U12): vorn ein lesbarer Kopf aus _-Schluesseln, den
- * gv_sicherung_lesen() ueberliest; dahinter die Konfiguration und der
- * Cloud-Schluessel. Rueckgabe: JSON oder false.
+ * 0.9.42: Die Sicherung als Feld - Kopf (_hinweis, _plugin, _fassung, _stand, bei Bedarf _warnung) und Inhalt baut das
+ * gemeinsame Sicherungsmodul (sicherung_bauen()) aus der Konfiguration und dem Cloud-Schluessel. Sprechtoken und
+ * Vermerke laesst die Beschreibung weg. X-3 wie bisher: wuerde das Zurueckspielen genau diese Datei abweisen, sagt es
+ * der Kopf _warnung, nur mit Namen, nie mit Werten; geliefert wird sie trotzdem.
  */
+function gv_sicherung_daten()
+{
+    $g = gv_geheim();
+    return sicherung_bauen(gv_sicherung_beschreibung(), gv_config(), array('cloud_key' => (string) $g['cloud_key']));
+}
+
+/** Die Sicherungsdatei als JSON-Text, oder false, wenn er sich nicht bilden laesst. */
 function gv_sicherung_datei()
 {
-    $p = gv_paths();
-    $kopf = array(
-        '_plugin'  => 'Govee (' . $p['plugin'] . ')',
-        '_stand'   => (gv_fassung() !== '' ? gv_fassung() : 'unbekannt') . ', ' . date('Y-m-d H:i:s'),
-        '_hinweis' => gv_klartext('EINST.SICH_KOPF_HINWEIS'),
-    );
-    $daten = array_merge(gv_ansage_fuer_sicherung(gv_config()), gv_geheim());     // nie ein Sprechtoken
-    /* X-3: Wuerde das Zurueckspielen genau diese Datei abweisen, sagt es der
-     * Kopf - nur Namen, nie Werte. Geliefert wird sie trotzdem vollstaendig. */
-    $warn = gv_rueckspiel_befund($daten);
-    if ($warn) {
-        $kopf['_warnung'] = sprintf(gv_klartext('EINST.SICH_X3_KOPF'), implode(', ', $warn));
-    }
-    return json_encode($kopf + $daten,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $js = sicherung_json(gv_sicherung_daten());
+    return $js === '' ? false : $js;
 }
 
 /**
- * X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen bestehen?
- *
- * Geprueft mit derselben gv_sicherung_lesen() wie das Zurueckspielen, ohne
- * etwas zu schreiben. $daten ist der Inhalt ohne Kopf (Konfiguration und
- * Cloud-Schluessel); ohne Angabe der gespeicherte Stand. Rueckgabe: die
- * Namen der Schluessel, die abgewiesen wuerden (nie Werte); leer, wenn die
- * Sicherung durchginge.
+ * X-3: Wuerde die EIGENE Sicherung beim Zurueckspielen bestehen? Seit 0.9.42 dieselbe Pruefung des Moduls wie beim
+ * Zurueckspielen (sicherung_selbstpruefung()), ohne etwas zu schreiben. Rueckgabe: die Namen der Schluessel, die
+ * abgewiesen wuerden (nie Werte); leer, wenn die Sicherung durchginge.
  */
-function gv_rueckspiel_befund($daten = null)
+function gv_rueckspiel_befund()
 {
-    if (!is_array($daten)) {
-        $daten = array_merge(gv_ansage_fuer_sicherung(gv_config()), gv_geheim());
-    }
-    $js = json_encode($daten, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) {
-        return array('json');
-    }
-    $namen = array();
-    list($neu) = gv_sicherung_lesen($js, $namen);
-    if ($neu !== null) {
-        return array();
-    }
-    return $namen ? array_values(array_unique(array_map('strval', $namen))) : array('json');
+    $cfg = gv_config();
+    return sicherung_selbstpruefung(gv_sicherung_beschreibung(), gv_sicherung_daten(), $cfg);
 }
 
 /**
