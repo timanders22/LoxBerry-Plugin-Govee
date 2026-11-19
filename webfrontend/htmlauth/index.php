@@ -1912,7 +1912,8 @@ if ($gv_geraete) {
 <tr><th style="width:36px;">&nbsp;</th><th style="width:32%;"><?= gv_e(gv_t('TEST.T_FRAGE')) ?></th><th><?= gv_e(gv_t('TEST.T_BEFUND')) ?></th></tr>
 <?php foreach (gv_pruefungen() as $gv_z) { ?>
 <tr><td style="text-align:center;"><?php
-    if ($gv_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    if (isset($gv_z['uhr'])) { echo uhr_zeichen($gv_z['uhr']); }
+    elseif ($gv_z['stand'] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($gv_z['stand'] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     else { echo '<span style="color:#888;">&#9679;</span>'; }
 ?></td><td><?= $gv_z['frage'] ?></td><td><?= $gv_z['antwort'] ?></td></tr>

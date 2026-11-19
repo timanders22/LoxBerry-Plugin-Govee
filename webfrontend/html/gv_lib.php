@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
 require_once __DIR__ . '/sicherung.php';         // 0.9.42: gemeinsames Sicherungsmodul (Abschrift der Stammfassung)
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /**
  * Govee - gemeinsame Bibliothek
  *
@@ -2763,6 +2764,8 @@ function gv_cloud_anfrage($pfad, $daten = null)
     $antwort = curl_exec($ch);
     $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curlfehler = curl_error($ch);
+    uhr_merken(gv_paths()['datadir'], uhr_aus_koepfen($gv_kopfzeilen),
+        (int) round(1000 * (float) curl_getinfo($ch, CURLINFO_TOTAL_TIME)), (string) parse_url(GV_CLOUD, PHP_URL_HOST));   // Uhrmodul (Frage 95)
     if (PHP_VERSION_ID < 80000) { curl_close($ch); }
 
     if ($antwort === false) {
