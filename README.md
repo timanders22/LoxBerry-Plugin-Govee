@@ -3,9 +3,13 @@
 Bindet Govee-Leuchten an Loxone an — über das Heimnetz, ohne Cloud, ohne Konto
 und ohne Internet, solange die Leuchte LAN Control beherrscht.
 
-Fassung 0.9.44 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
+Fassung 0.9.45 · Lizenz MIT · LoxBerry ab 3.0.0 · PHP 7.4 und 8.x
 
 ---
+
+## Neu in 0.9.45
+
+- Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.
 
 ## Neu in 0.9.44
 

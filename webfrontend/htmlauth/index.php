@@ -854,7 +854,8 @@ $gv_logzeilen = gv_log_ende($gv_p['log'], 400);
 
 $gv_rahmen = class_exists('LBWeb', false);
 if ($gv_rahmen) {
-    LBWeb::lbheader('Govee', 'https://wiki.loxberry.de/', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Govee', __DIR__), 'https://wiki.loxberry.de/', 'help.html');
 }
 ?>
 <style>
