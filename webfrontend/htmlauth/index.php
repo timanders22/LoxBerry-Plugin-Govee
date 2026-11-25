@@ -154,6 +154,12 @@ if ($gv_post && isset($_POST['vorlage'])) {
 /* Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
 /* 0.9.34: unmaskiert, die Ausgabe (Kasten oben auf der Seite) maskiert selbst; bis 0.9.33 stand ein "&" doppelt maskiert da.
  * Die Knoepfe "Testansage an Ziel n" schicken ansage_test_ziel=n statt ansage_test (Bauart Bewaesserung). */
+/* 0.9.47: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($gv_post && isset($_POST['meld_test'])) {
+    list($gv_at, $gv_ag) = gv_meld_test();
+    if ($gv_at) { $gv_meldungen[] = gv_t('SIGNALMELDUNG.T_OK'); } else { $gv_fehler[] = $gv_ag; }
+    $gv_tab = 'tab-settings';
+}
 if ($gv_post && (isset($_POST['ansage_test']) || isset($_POST['ansage_test_ziel']))) {
     list($gv_at, $gv_ag) = gv_ansage_test();
     if ($gv_at) { $gv_meldungen[] = gv_t('ANSAGEPLUGIN.M_TEST_OK'); } else { $gv_fehler[] = gv_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $gv_ag; }
@@ -610,6 +616,13 @@ if ($gv_post && isset($_POST['save_mqtt'])) {
          * Entscheidung 19: beanstanden. Das Zurueckspielen weist dasselbe
          * schon ab (gv_sicherung_wert_pruefen, mqtt_topic). */
         $gv_fehler[] = gv_t('EINST.FEHLER_TOPIC_RAND');
+        $gv_bean[] = 'mqtt_topic';
+    } elseif (hb_bereich($gv_mtopic) !== '' && $gv_mtopic !== (string) $gv_mcfg['mqtt_topic']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 0.9.47 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $gv_fehler[] = sprintf(gv_t('HAUSBEREICH.FEHLER'), $gv_mtopic, hb_bereich($gv_mtopic));
         $gv_bean[] = 'mqtt_topic';
     } else {
         $gv_mcfg['mqtt_topic'] = $gv_mtopic;

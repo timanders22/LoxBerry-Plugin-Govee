@@ -176,6 +176,9 @@ function gv_pruefungen()
      * lief, 35 s Mithoeren am Broker bei 30 s Takt - keine einzige Nachricht.
      *
      * Grau statt rot: ausgeschaltet ist eine Entscheidung, kein Fehler. */
+    // 0.9.47: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $gv_hb = gv_pruef_praefix_haus($cfg);
+    $zeilen[] = gv_pruefzeile($gv_hb[0], gv_t('HAUSBEREICH.F_TEST'), $gv_hb[1]);
     $mqttEin = !empty($cfg['mqtt_ein']);
     $zeilen[] = gv_pruefzeile($mqttEin ? 1 : -1, gv_t('TEST.F_MQTT_EIN'),
         gv_t($mqttEin ? 'TEST.A_MQTT_EIN_JA' : 'TEST.A_MQTT_EIN_NEIN'));

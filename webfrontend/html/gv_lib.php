@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 0.9.47)
 require_once __DIR__ . '/sicherung.php';         // 0.9.42: gemeinsames Sicherungsmodul (Abschrift der Stammfassung)
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 0.9.47, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /**
  * Govee - gemeinsame Bibliothek
@@ -4855,19 +4857,20 @@ function gv_t($schluessel)
 /** Die Schluessel der Sprachansagen in der Hauptkonfiguration. */
 function gv_ansage_schluessel()
 {
-    return array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft', 'ansage_aus_datei');
+    return array('tts', 'ansage_regeln', 'ansage_haken', 'meldung', 'ansage_token_herkunft', 'ansage_aus_datei');
 }
 
 /** Die Vorgaben: nie gesetzt = ab Werk EIN. Ein gespeicherter Block bleibt, auch 'aus'. */
 function gv_ansage_vorgaben()
 {
-    return array('tts' => ansage_werk_block(), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('geraet' => 0, 'konto' => 1), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
+    return array('tts' => ansage_werk_block(), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('geraet' => 0, 'konto' => 1), 'meldung' => meld_vorgaben(gv_meld_haken_vorgabe(), gv_meld_haken_vorgabe()), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
 }
 
 /** Wertpruefung fuer die Sprachansagen: null = nicht meine Schluessel, sonst tauglich ja/nein. */
 function gv_ansage_wert($k, $w)
 {
     if (!in_array((string) $k, gv_ansage_schluessel(), true)) { return null; }
+    if ((string) $k === 'meldung') { return !meld_block_pruefen($w, gv_ansage_anlaesse()); }     // 0.9.47
     $g = '';
     switch ((string) $k) {
         case 'tts':
@@ -4957,7 +4960,16 @@ function gv_ansage_anlaesse()
 }
 
 /** Ist der Haken dieses Anlasses gesetzt? Fehlt er, gilt die Vorgabe der Linie. */
+/** 0.9.47: Will die Ansage ODER die Meldung an SignalBot diesen Anlass? So legt die Erkennung ihn fuer beide Wege hin;
+ * gv_ansage_senden() trennt sie wieder (gv_meld_nur_ansage()). */
 function gv_ansage_anlass_an($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gv_ansage_cfg(); }
+    return gv_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(gv_meld_block($cfg), (string) $a);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? (bis 0.9.47 hiess das gv_ansage_anlass_an()) */
+function gv_ansage_anlass_sprache($a, $cfg = null)
 {
     if ($cfg === null) { $cfg = gv_ansage_cfg(); }
     $h = (isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken'])) ? $cfg['ansage_haken'] : array();
@@ -4990,12 +5002,14 @@ function gv_ansage_post(array $post)
     $h = array();
     $neu = ansage_formular_lesen($post, gv_tts($cfg), $m, $b, array('modi' => gv_ansage_modi(), 'ziele' => true, 'token_vor_ort' => true, 'aus_gewinnt' => true), $k, $h);
     list($r, $hk) = ansage_regeln_formular($post, gv_ansage_regeln($cfg), gv_ansage_anlaesse(), $m, $b, $k);
+    // 0.9.47: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das ganze Formular an, wie die Regeln)
+    $meld = meld_formular_lesen($post, array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, gv_ansage_anlaesse(), $m, $b, gv_meld_k(), gv_meld_haken_vorgabe());
     if ($m) {
         $t = array();
         foreach ($m as $x) { $t[] = $x['text']; }
         $e = array('_bean' => array_values($b));
         foreach ($post as $n => $w) {
-            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0) {
+            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0 || strncmp((string) $n, 'meld_', 5) === 0) {
                 if ((string) $n !== 'tts_alexa_token' && (string) $n !== 'tts_google_token') { $e[$n] = $w; }
             }
         }
@@ -5007,6 +5021,7 @@ function gv_ansage_post(array $post)
     $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
+    $cfg['meldung'] = $meld;
     $t = array();
     foreach ($h as $x) { $t[] = $x['text']; }
     return array(gv_ansage_cfg_schreiben($cfg), array(), $t);
@@ -5030,8 +5045,14 @@ function gv_ansage_form_html($felder)
     $o[] = '<form action="index.php" method="post" autocomplete="off">' . $felder;
     $o[] = ansage_formular_html(gv_tts($cfg), $h + array('modi' => gv_ansage_modi(), 'ziele' => true, 'ziele_post' => isset($ein['tts_ziel_art']) ? $ein : null), $k);
     $o[] = ansage_regeln_html(gv_ansage_regeln($cfg), (isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken']) ? $cfg['ansage_haken'] : array()) + array('geraet' => 0, 'konto' => 1), gv_ansage_anlaesse(), $h + array('token_vor_ort' => true), $k);
+    // 0.9.47: Statusmeldungen an SignalBot (gemeinsames Modul meldung.php), im selben Formular
+    $o[] = '<h3>' . $e(gv_t('SIGNALMELDUNG.TITEL')) . '</h3>';
+    $o[] = meld_formular_html(gv_meld_block($cfg), gv_ansage_anlaesse(), $h, gv_meld_k());
+    list(, $meld_lage) = meld_pruefzeile(gv_meld_block($cfg), gv_meld_bean($cfg), gv_meld_k());
+    $o[] = '<div class="sm-hilfe">' . $e(gv_t('SIGNALMELDUNG.F_TEST') . ' ' . $meld_lage) . '</div>';
     $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_speichern" value="1">' . $e(gv_t('ANSAGEPLUGIN.K_SPEICHERN')) . '</button>';
     $o[] = '<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1">' . $e(gv_t('ANSAGEPLUGIN.K_TEST')) . '</button>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">' . $e(gv_t('SIGNALMELDUNG.K_TEST')) . '</button></div>';     // 0.9.47
     // 0.9.34: je Ziel ein Knopf (Bauart Bewaesserung); im selben Formular, das Merkmal fmt reist also mit. Ohne weitere Ziele nichts.
     $o[] = ansage_testknoepfe_html(gv_tts($cfg), $k, array('klasse' => 'sm-btn sm-b-aktion')) . '</div>';
     $o[] = '</form>';
@@ -5210,6 +5231,8 @@ function gv_ansage_senden($jetzt = null)
         $conf = gv_ansage_cfg();
         gv_ansage_token_pflegen($conf);
         $conf = gv_ansage_cfg();
+        gv_meld_senden($frisch, $conf);     // 0.9.47: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = gv_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, gv_tts($conf), gv_ansage_regeln($conf), gv_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -5317,6 +5340,7 @@ function gv_sicherung_beschreibung()
         'tts' => sicherung_block($tts, $tts_knoten) + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen'),
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
         'ansage_haken' => sicherung_block(array('geraet', 'konto')) + array('fehlt' => 'behalten'),
+        'meldung'      => meld_sicherung_knoten(gv_ansage_anlaesse(), gv_meld_k()),     // 0.9.47
     );
     foreach (gv_spaet_schluessel() as $s) {
         $schluessel[$s] = array('fehlt' => 'behalten');
@@ -5608,6 +5632,10 @@ function gv_sicherung_wert_pruefen($k, $w)
             return (is_string($w) && ($w === '' || preg_match($r['cloud_key'], $w)))
                 ? array() : array(gv_t('EINST.SICH_W_KEY'));
         case 'mqtt_topic':
+            /* 0.9.47: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if (is_string($w) && hb_bereich($w) !== '') {
+                return array('mqtt_topic: ' . sprintf(gv_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+            }
             return (gv_sich_text($w) && preg_match($r['topic'], $w) && trim($w, '/') === $w)
                 ? array() : array('mqtt_topic: ' . gv_t('EINST.FEHLER_TOPIC'));
         case 'nr_hoechste':
@@ -6084,4 +6112,112 @@ function gv_http_abruf($url, $ctx)
         }
     }
     return array($t, $code);
+}
+
+/**
+ * 0.9.47 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function gv_pruef_praefix_haus($cfg)
+{
+    $p = (trim((string) $cfg['mqtt_topic'], '/') !== '' ? trim((string) $cfg['mqtt_topic'], '/') : 'govee');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(gv_t('HAUSBEREICH.A_AUS'), gv_e($p), gv_e($b)));
+        }
+        return array(0, sprintf(gv_t('HAUSBEREICH.A_NEIN'), gv_e($p), gv_e($b)));
+    }
+    return array(1, sprintf(gv_t('HAUSBEREICH.A_JA'), gv_e($p)));
+}
+
+/**
+ * 0.9.47: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function gv_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = (trim((string) $cfg['mqtt_topic'], '/') !== '' ? trim((string) $cfg['mqtt_topic'], '/') : 'govee');
+    if ($merk === null) {
+        $merk = gv_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        gv_log(hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('gv_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (0.9.47, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23.11.2026 ("haus/meldung (Empfehlung)", "Wie empfohlen"): dieselben
+ * Anlaesse wie die Ansage, eigener Haken je Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung legt
+ * einen Anlass hin, wenn Ansage ODER Meldung ihn will (gv_ansage_anlass_an()); der Sender trennt die Wege wieder.
+ */
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function gv_meld_haken_vorgabe()
+{
+    return array('geraet' => 0, 'konto' => 1);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function gv_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = gv_ansage_cfg(); }
+    list($b) = meld_block(array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, gv_ansage_anlaesse(), gv_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function gv_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = gv_ansage_cfg(); }
+    list(, $f) = meld_block(array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, gv_ansage_anlaesse(), gv_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function gv_meld_k()
+{
+    return gv_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function gv_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gv_ansage_cfg(); }
+    $anl = gv_ansage_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !gv_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function gv_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = gv_ansage_cfg(); }
+    $b = gv_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, gv_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        gv_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function gv_meld_test()
+{
+    $r = meld_testmeldung(gv_meld_k());
+    gv_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
 }

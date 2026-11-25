@@ -449,6 +449,7 @@ function gv_abbild_schreiben($treffer, $gefragt)
          * Themenliste haelt (M4). */
         $jetzt = time();
         $praefix = trim((string) $cfg['mqtt_topic'], '/');
+        gv_praefix_haus_melden($cfg);   // 0.9.47: Praefix im gemeinsamen Bereich? melden, nicht anhalten
         $paare = gv_mqtt_paare($neu, array('ok' => $ok_neu, 'geraete' => count($neu),
             'fehler_folge' => $fehler_folge, 'zaehler' => gv_zaehler()), $cfg, $jetzt);
         list($weg_paare, $weg_leeren, $weg_nummern) = gv_mqtt_entfernte($neu, $cfg);
